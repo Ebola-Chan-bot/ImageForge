@@ -1,7 +1,8 @@
 Refresh v2.2 after long image preview scrolling fix
 
-Time: 2026-05-08 20:39 Asia/Shanghai
+Time: 2026-05-08 20:44 Asia/Shanghai
 Changes:
 - Fix long image preview scrolling to bottom
 - Improve preview dialog scroll behavior and layout
+- Fix release workflow stale-check blocking publish
 - Single unified v2.2 re-release
