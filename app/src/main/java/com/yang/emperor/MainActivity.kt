@@ -856,24 +856,29 @@ fun MainScreen(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .heightIn(max = 360.dp)
                                         .clip(RoundedCornerShape(20.dp))
                                         .background(Color.White)
                                         .border(1.dp, Color(0xFFD9E1F5), RoundedCornerShape(20.dp))
                                         .padding(6.dp)
                                 ) {
-                                    Image(
-                                        bitmap = previewBitmap!!.asImageBitmap(),
-                                        contentDescription = "生成图片预览",
+                                    Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .aspectRatio(
-                                                (previewBitmap!!.width.toFloat() / previewBitmap!!.height.toFloat())
-                                                    .coerceIn(0.55f, 1.8f)
-                                            )
-                                    )
+                                            .heightIn(max = 520.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        Image(
+                                            bitmap = previewBitmap!!.asImageBitmap(),
+                                            contentDescription = "生成图片预览",
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .aspectRatio(
+                                                    previewBitmap!!.width.toFloat() / previewBitmap!!.height.toFloat()
+                                                )
+                                        )
+                                    }
                                 }
-                                StatusCard("图片已生成，可在此查看、打开或分享。")
+                                StatusCard("图片已生成，可在此查看、打开或分享；长图支持继续下滑查看到底部。")
                             } else {
                                 StatusCard("这条记录没有可读取的图片文件，仅保留描述内容。")
                             }
