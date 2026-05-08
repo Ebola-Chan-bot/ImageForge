@@ -56,12 +56,7 @@ jobs:
 
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             RELEASE_SHA="${{ github.event.workflow_run.head_sha }}"
-            git fetch origin main --depth=1
-            LATEST_MAIN_SHA="$(git rev-parse origin/main)"
-            if [ "$RELEASE_SHA" != "$LATEST_MAIN_SHA" ]; then
-              echo "Skip stale release: workflow_run SHA $RELEASE_SHA is not latest main $LATEST_MAIN_SHA."
-              RELEASE_ENABLED="false"
-            fi
+            echo "Release triggered from workflow_run SHA: $RELEASE_SHA"
           fi
 
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
