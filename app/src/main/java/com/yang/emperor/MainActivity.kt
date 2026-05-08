@@ -714,7 +714,12 @@ fun MainScreen(
             onDismissRequest = { showReferenceSheet = false },
             title = { Text("参考图") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text(
                         "选择参考图后会自动切换为图生图 / 编辑；清除后自动回到文生图",
                         color = Color(0xFF6B7280)
