@@ -53,50 +53,60 @@ jobs:
 
           RELEASE_ENABLED="true"
           RELEASE_SHA="$(git rev-parse HEAD)"
+          ARTIFACT_RUN_ID=""
 
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             RELEASE_SHA="${{ github.event.workflow_run.head_sha }}"
+            ARTIFACT_RUN_ID="${{ github.event.workflow_run.id }}"
             echo "Release triggered from workflow_run SHA: $RELEASE_SHA"
+            echo "Reuse build artifact from run id: $ARTIFACT_RUN_ID"
           fi
 
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
           echo "RELEASE_SHA=$RELEASE_SHA" >> "$GITHUB_ENV"
+          echo "ARTIFACT_RUN_ID=$ARTIFACT_RUN_ID" >> "$GITHUB_ENV"
           echo "RELEASE_ENABLED=$RELEASE_ENABLED" >> "$GITHUB_ENV"
 
-      - name: Set up JDK 17
-        if: env.RELEASE_ENABLED == 'true'
+      - name: Download release APK artifact from triggering build
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_run'
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          github_token: ${{ github.token }}
+          run_id: ${{ env.ARTIFACT_RUN_ID }}
+          name: ImageForge-apks
+          path: dist
+          if_no_artifact_found: fail
+
+      - name: Set up JDK 17 for manual dispatch fallback
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        if: env.RELEASE_ENABLED == 'true'
+      - name: Set up Android SDK for manual dispatch fallback
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
         uses: android-actions/setup-android@v4
 
-      - name: Configure Android SDK path
-        if: env.RELEASE_ENABLED == 'true'
+      - name: Configure Android SDK path for manual dispatch fallback
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-
           if [ ! -d "$SDK_DIR" ]; then
             echo "Android SDK directory does not exist: $SDK_DIR"
             exit 1
           fi
-
           echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
           echo "sdk.dir=$SDK_DIR" > local.properties
-
-          echo "Configured Android SDK:"
           cat local.properties
 
-      - name: Prepare release signing
-        if: env.RELEASE_ENABLED == 'true'
+      - name: Prepare release signing for manual dispatch fallback
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -109,43 +119,40 @@ jobs:
             echo "ANDROID_KEYSTORE_BASE64 is not configured; release APK will use default signing behavior."
             exit 0
           fi
-
           mkdir -p "$RUNNER_TEMP/android-signing"
           KEYSTORE_PATH="$RUNNER_TEMP/android-signing/release.jks"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           chmod 600 "$KEYSTORE_PATH"
-
           echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
           echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
 
-      - name: Build Release APK
-        if: env.RELEASE_ENABLED == 'true'
+      - name: Build release APK for manual dispatch fallback
+        if: env.RELEASE_ENABLED == 'true' && github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ ! -f ./gradlew ]; then
-            echo "Missing Gradle Wrapper script: ./gradlew"
-            exit 1
-          fi
-
-          if [ ! -f ./gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "Missing Gradle Wrapper jar: ./gradle/wrapper/gradle-wrapper.jar"
-            exit 1
-          fi
-
           chmod +x ./gradlew
-          ./gradlew --version
-          test -f local.properties
-          cat local.properties
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
-
           mkdir -p dist
           RELEASE_APK="$(find app/build/outputs/apk/release -name '*release*.apk' -print -quit 2>/dev/null || true)"
           test -n "$RELEASE_APK"
           cp "$RELEASE_APK" dist/app-release.apk
+
+      - name: Normalize release artifact path
+        if: env.RELEASE_ENABLED == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ -f dist/app-release.apk ]; then
+            ls -lah dist/app-release.apk
+            exit 0
+          fi
+          FOUND_APK="$(find dist \( -name 'app-release.apk' -o -name '*release*.apk' \) -type f | head -n 1)"
+          test -n "$FOUND_APK"
+          cp "$FOUND_APK" dist/app-release.apk
           ls -lah dist/app-release.apk
 
       - name: Publish APK to GitHub Release
@@ -205,6 +212,16 @@ jobs:
           - 点击打开后直接交给系统图片查看器，减少主流程等待和 I/O 阻塞。
           - 保留系统 URI 读权限授权，提升外部查看器打开成功率。
 
+          ### 长图预览滚动优化
+
+          - 修复长图预览在弹窗中无法继续滑动到底部的问题。
+          - 优化预览弹窗正文滚动行为与图片区域布局，长图浏览更顺畅。
+
+          ### 发布链路优化
+
+          - 发布工作流改为复用上游构建产物，不再重复二次编译 release APK。
+          - 缩短 GitHub Release 覆盖发布时间，并减少重复构建带来的不稳定性。
+
           ## 下载与安装
 
           请在本页面下方 Assets 中下载：
@@ -233,7 +250,7 @@ jobs:
 
           - Release APK：构建通过。
           - GitHub Release：自动覆盖上传完成。
-          - Release tag：已自动对齐本次参考图优化提交。
+          - Release tag：已自动对齐本次提交。
           BODY
 
           sed -i "s/__TAG_NAME__/$TAG_NAME/g; s/__VERSION_NAME__/$VERSION_NAME/g" "$BODY_FILE"
