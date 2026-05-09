@@ -115,7 +115,7 @@ jobs:
         run: |
           mkdir -p ci-logs
           set +e
-          "$GRADLE_CMD" :app:lintDebug --build-cache --stacktrace 2>&1 | tee ci-logs/lintDebug.log
+          "$GRADLE_CMD" :app:lintDebug --build-cache --configuration-cache --configuration-cache-problems=warn --stacktrace 2>&1 | tee ci-logs/lintDebug.log
           LINT_EXIT_CODE=${PIPESTATUS[0]}
           echo "LINT_EXIT_CODE=$LINT_EXIT_CODE" >> "$GITHUB_ENV"
           echo "Android Lint exit code: $LINT_EXIT_CODE"
@@ -250,7 +250,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$GRADLE_CMD" :app:assembleDebug :app:assembleRelease --build-cache --stacktrace --info
+          "$GRADLE_CMD" :app:assembleDebug :app:assembleRelease --build-cache --configuration-cache --configuration-cache-problems=warn --stacktrace --info
 
       - name: Validate APK Exists
         shell: bash
