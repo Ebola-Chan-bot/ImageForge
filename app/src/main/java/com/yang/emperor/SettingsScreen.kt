@@ -245,7 +245,7 @@ internal fun SettingsScreen(
                         value = baseUrl,
                         onValueChange = onBaseUrlChange,
                         label = { Text("Base URL") },
-                        placeholder = { Text("例如：https://api.openai.com/v1") },
+                        placeholder = { Text("例如：https://你的服务地址/v1") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(18.dp)
