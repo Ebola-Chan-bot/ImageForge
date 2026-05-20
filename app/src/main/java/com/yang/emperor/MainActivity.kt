@@ -282,7 +282,7 @@ fun MainScreen(
 
     var currentRoute by rememberSaveable { mutableStateOf(ScreenRoute.MAIN) }
 
-    var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("baseUrl", "https://api.openai.com/v1") ?: "") }
+    var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("baseUrl", "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(prefs.getString("apiKey", "") ?: "") }
     var apiMode by rememberSaveable { mutableStateOf(ApiMode.from(prefs.getString("apiMode", ApiMode.IMAGES.value))) }
     var generateModel by rememberSaveable { mutableStateOf(prefs.getString("generateModel", prefs.getString("model", "gpt-image-2")) ?: "gpt-image-2") }
@@ -301,6 +301,8 @@ fun MainScreen(
     var isReadingReferenceImage by remember { mutableStateOf(false) }
     var showReferenceSheet by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
+    var discoveredImageModels by remember { mutableStateOf(emptyList<String>()) }
+    var isDiscoveringImageModels by remember { mutableStateOf(false) }
     var showParamsSheet by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
     var historyNotice by remember { mutableStateOf("") }
@@ -356,6 +358,9 @@ fun MainScreen(
 
     val currentSizes = if (editMode) editSizes else generationSizes
     val selectedSizeOption = currentSizes.firstOrNull { it.value == size } ?: currentSizes.first()
+    val modelOptions = remember(discoveredImageModels) {
+        (discoveredImageModels + imageModels).distinct()
+    }
 
     LaunchedEffect(selectedImage) {
         editMode = selectedImage != null
@@ -778,7 +783,7 @@ fun MainScreen(
             AppEditableDropdownField(
                 title = "文生图模型 ID",
                 value = customGenerateModel,
-                options = imageModels,
+                options = modelOptions,
                 placeholder = "可手动输入，也可从推荐模型中选择",
                 onValueChange = {
                     customGenerateModel = it
@@ -792,7 +797,7 @@ fun MainScreen(
             AppEditableDropdownField(
                 title = "图生图模型 ID",
                 value = customEditModel,
-                options = imageModels,
+                options = modelOptions,
                 placeholder = "可手动输入，也可从推荐模型中选择",
                 onValueChange = {
                     customEditModel = it
@@ -803,6 +808,46 @@ fun MainScreen(
                     editModel = it
                 }
             )
+            Button(
+                enabled = !isDiscoveringImageModels,
+                onClick = {
+                    if (baseUrl.isBlank() || apiKey.isBlank()) {
+                        status = "请先填写 Base URL 和 API Key。"
+                        return@Button
+                    }
+                    isDiscoveringImageModels = true
+                    status = "正在自动寻找生图模型..."
+                    activityTaskScope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                        }
+                        isDiscoveringImageModels = false
+                        result.onSuccess { models ->
+                            if (models.isEmpty()) {
+                                status = "未在当前接口发现生图相关模型。"
+                            } else {
+                                val selectedModel = models.first()
+                                discoveredImageModels = models
+                                generateModel = selectedModel
+                                editModel = selectedModel
+                                customGenerateModel = selectedModel
+                                customEditModel = selectedModel
+                                prefs.edit {
+                                    putString("generateModel", selectedModel)
+                                    putString("editModel", selectedModel)
+                                    putString("model", selectedModel)
+                                }
+                                status = "已发现 ${models.size} 个生图模型，并自动替换为 $selectedModel。"
+                            }
+                        }.onFailure { error ->
+                            status = "自动寻找模型失败：${error.message ?: "未知错误"}"
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isDiscoveringImageModels) "正在寻找..." else "自动寻找生图模型")
+            }
             Button(
                 onClick = {
                     prefs.edit {
@@ -1147,7 +1192,7 @@ fun MainScreen(
                     remove("background")
                     remove("onboardingDone")
                 }
-                baseUrl = "https://api.openai.com/v1"
+                baseUrl = ""
                 apiKey = ""
                 apiMode = ApiMode.IMAGES
                 generateModel = "gpt-image-2"
@@ -1418,10 +1463,50 @@ fun MainScreen(
                                             }
                                         }
                                     )
+                                    Button(
+                                        enabled = !isDiscoveringImageModels,
+                                        onClick = {
+                                            if (baseUrl.isBlank() || apiKey.isBlank()) {
+                                                status = "请先填写 Base URL 和 API Key。"
+                                                return@Button
+                                            }
+                                            isDiscoveringImageModels = true
+                                            status = "正在自动寻找生图模型..."
+                                            activityTaskScope.launch {
+                                                val result = withContext(Dispatchers.IO) {
+                                                    runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                                                }
+                                                isDiscoveringImageModels = false
+                                                result.onSuccess { models ->
+                                                    if (models.isEmpty()) {
+                                                        status = "未在当前接口发现生图相关模型。"
+                                                    } else {
+                                                        val selectedModel = models.first()
+                                                        discoveredImageModels = models
+                                                        generateModel = selectedModel
+                                                        editModel = selectedModel
+                                                        customGenerateModel = selectedModel
+                                                        customEditModel = selectedModel
+                                                        prefs.edit {
+                                                            putString("generateModel", selectedModel)
+                                                            putString("editModel", selectedModel)
+                                                            putString("model", selectedModel)
+                                                        }
+                                                        status = "已发现 ${models.size} 个生图模型，并自动替换为 $selectedModel。"
+                                                    }
+                                                }.onFailure { error ->
+                                                    status = "自动寻找模型失败：${error.message ?: "未知错误"}"
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(if (isDiscoveringImageModels) "正在寻找..." else "自动寻找生图模型")
+                                    }
                                     AppEditableDropdownField(
                                         title = if (selectedImage != null) "图生图模型 ID" else "文生图模型 ID",
                                         value = if (selectedImage != null) customEditModel else customGenerateModel,
-                                        options = imageModels,
+                                        options = modelOptions,
                                         placeholder = "输入或选择模型 ID",
                                         onValueChange = { value ->
                                             if (selectedImage != null) {
