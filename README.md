@@ -176,6 +176,20 @@ app-release.apk
 https://github.com/Wzindx/ImageForge/releases/latest
 ```
 
+## 参考与致谢
+
+本项目在界面风格、交互组织和文档表达上参考了以下开源项目，感谢这些项目及其开发者提供的启发。
+
+- [compose-miuix-ui / miuix](https://github.com/compose-miuix-ui/miuix)：参考其面向移动端的 Compose 视觉风格、圆角卡片、浅色层级和分组体验。
+- [ReChronoRain / HyperCeiler](https://github.com/ReChronoRain/HyperCeiler)：参考其 README 的说明结构、使用前说明、项目关系声明和致谢组织方式。
+- [CookSleep / gpt_image_playground](https://github.com/CookSleep/gpt_image_playground)：参考其图像生成工作流、模型参数组织和轻量化 Playground 体验方向。
+
+说明：
+
+- ImageForge 是独立项目，不属于上述项目的官方项目、衍生版本或合作项目。
+- 当前项目未直接包含上述项目的源码。
+- 上述项目名称和链接仅用于说明参考来源、学习方向和开源致谢。
+
 ## License
 
 本项目采用 Apache License 2.0 授权，详见仓库根目录的 `LICENSE` 文件。
