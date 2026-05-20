@@ -314,6 +314,47 @@ fun parseResponsesImageResponse(conn: HttpURLConnection): ByteArray {
     error("Responses API 未返回可用图片数据（既没有 result/base64，也没有 url）")
 }
 
+fun discoverImageModels(baseUrl: String, apiKey: String): List<String> {
+    require(apiKey.isNotBlank()) { "请填写 API Key" }
+
+    return withNetworkRetries("模型列表请求") {
+        val conn = openGetConnection(endpoint(baseUrl, "/models"), apiKey)
+        try {
+            val code = readResponseCode(conn, "模型列表接口")
+            val text = readResponseTextSafely(conn, code)
+            if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+
+            val data = JSONObject(text).optJSONArray("data") ?: JSONArray()
+            val models = mutableListOf<String>()
+            for (index in 0 until data.length()) {
+                val id = data.optJSONObject(index)?.optString("id", "").orEmpty().trim()
+                if (id.isNotBlank() && isImageGenerationModelId(id)) {
+                    models.add(id)
+                }
+            }
+            models.distinct()
+        } finally {
+            conn.disconnect()
+        }
+    }
+}
+
+private fun isImageGenerationModelId(id: String): Boolean {
+    val normalized = id.lowercase()
+    val includeKeywords = listOf(
+        "image", "img", "dall-e", "dalle", "gpt-image", "imagen",
+        "flux", "sdxl", "stable-diffusion", "stable_diffusion", "midjourney",
+        "qwen-image", "seedream", "jimeng", "kolors", "ideogram", "recraft"
+    )
+    val excludeKeywords = listOf(
+        "embedding", "text-embedding", "audio", "speech", "tts", "transcribe",
+        "whisper", "moderation", "rerank", "vision-preview", "realtime",
+        "chat", "instruct", "asr", "ocr"
+    )
+    return includeKeywords.any { normalized.contains(it) } &&
+        excludeKeywords.none { normalized.contains(it) }
+}
+
 fun download(url: String): ByteArray {
     return withNetworkRetries("图片下载") {
         val conn = URL(url).openConnection() as HttpURLConnection
@@ -416,6 +457,17 @@ private fun openPostConnection(
         setRequestProperty("Accept", "application/json")
         setRequestProperty("Connection", "close")
     })
+}
+
+private fun openGetConnection(url: String, apiKey: String): HttpURLConnection {
+    return (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = CONNECT_TIMEOUT_MS
+        readTimeout = READ_TIMEOUT_MS
+        setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
+        setRequestProperty("Accept", "application/json")
+        setRequestProperty("Connection", "close")
+    }
 }
 
 private fun writeJsonBody(conn: HttpURLConnection, body: JSONObject) {
