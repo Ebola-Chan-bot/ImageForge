@@ -302,8 +302,11 @@ fun MainScreen(
     var showReferenceSheet by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
     var discoveredImageModels by remember { mutableStateOf(emptyList<String>()) }
+    var pendingDiscoveredImageModels by remember { mutableStateOf(emptyList<String>()) }
+    var showDiscoveredModelPicker by remember { mutableStateOf(false) }
     var isDiscoveringImageModels by remember { mutableStateOf(false) }
     var showParamsSheet by remember { mutableStateOf(false) }
+
     var status by remember { mutableStateOf("") }
     var historyNotice by remember { mutableStateOf("") }
     var settingsNotice by remember { mutableStateOf("") }
@@ -326,6 +329,38 @@ fun MainScreen(
     var customSaveDirectoryUriString by rememberSaveable { mutableStateOf(prefs.getString("customSaveDirectoryUri", "") ?: "") }
     val customSaveDirectoryUri = customSaveDirectoryUriString.takeIf { it.isNotBlank() }?.let { it.toUri() }
     val saveDirectoryLabel = readableSaveDirectoryLabel(customSaveDirectoryUriString)
+
+    fun applyDiscoveredImageModel(selectedModel: String, models: List<String>) {
+        discoveredImageModels = models
+        generateModel = selectedModel
+        editModel = selectedModel
+        customGenerateModel = selectedModel
+        customEditModel = selectedModel
+        prefs.edit {
+            putString("generateModel", selectedModel)
+            putString("editModel", selectedModel)
+            putString("model", selectedModel)
+        }
+    }
+
+    fun handleDiscoveredImageModels(models: List<String>) {
+        when {
+            models.isEmpty() -> {
+                status = "未在当前接口发现生图相关模型。"
+            }
+            models.size == 1 -> {
+                val selectedModel = models.first()
+                applyDiscoveredImageModel(selectedModel, models)
+                status = "已发现 1 个生图模型，并自动替换为 $selectedModel。"
+            }
+            else -> {
+                discoveredImageModels = models
+                pendingDiscoveredImageModels = models
+                showDiscoveredModelPicker = true
+                status = "已发现 ${models.size} 个生图模型，请选择要使用的模型。"
+            }
+        }
+    }
 
     BackHandler(enabled = !showOnboarding && selectedHistoryKeys.isNotEmpty()) {
         selectedHistoryKeys.clear()
@@ -714,6 +749,59 @@ fun MainScreen(
         return
     }
 
+    if (showDiscoveredModelPicker) {
+        AlertDialog(
+            onDismissRequest = {
+                showDiscoveredModelPicker = false
+                pendingDiscoveredImageModels = emptyList()
+            },
+            title = { Text("选择生图模型") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "当前接口发现 ${pendingDiscoveredImageModels.size} 个生图相关模型，请选择一个写入接口与模型配置。",
+                        color = Color(0xFF6B7280)
+                    )
+                    pendingDiscoveredImageModels.forEach { modelId ->
+                        TextButton(
+                            onClick = {
+                                applyDiscoveredImageModel(modelId, pendingDiscoveredImageModels)
+                                showDiscoveredModelPicker = false
+                                pendingDiscoveredImageModels = emptyList()
+                                status = "已选择并替换生图模型为 $modelId。"
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = modelId,
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showDiscoveredModelPicker = false
+                        pendingDiscoveredImageModels = emptyList()
+                    }
+                ) {
+                    Text("取消")
+                }
+            },
+            shape = RoundedCornerShape(24.dp)
+        )
+    }
+
     if (showReferenceSheet) {
         AlertDialog(
             onDismissRequest = { showReferenceSheet = false },
@@ -823,22 +911,7 @@ fun MainScreen(
                         }
                         isDiscoveringImageModels = false
                         result.onSuccess { models ->
-                            if (models.isEmpty()) {
-                                status = "未在当前接口发现生图相关模型。"
-                            } else {
-                                val selectedModel = models.first()
-                                discoveredImageModels = models
-                                generateModel = selectedModel
-                                editModel = selectedModel
-                                customGenerateModel = selectedModel
-                                customEditModel = selectedModel
-                                prefs.edit {
-                                    putString("generateModel", selectedModel)
-                                    putString("editModel", selectedModel)
-                                    putString("model", selectedModel)
-                                }
-                                status = "已发现 ${models.size} 个生图模型，并自动替换为 $selectedModel。"
-                            }
+                            handleDiscoveredImageModels(models)
                         }.onFailure { error ->
                             status = "自动寻找模型失败：${error.message ?: "未知错误"}"
                         }
@@ -1478,22 +1551,7 @@ fun MainScreen(
                                                 }
                                                 isDiscoveringImageModels = false
                                                 result.onSuccess { models ->
-                                                    if (models.isEmpty()) {
-                                                        status = "未在当前接口发现生图相关模型。"
-                                                    } else {
-                                                        val selectedModel = models.first()
-                                                        discoveredImageModels = models
-                                                        generateModel = selectedModel
-                                                        editModel = selectedModel
-                                                        customGenerateModel = selectedModel
-                                                        customEditModel = selectedModel
-                                                        prefs.edit {
-                                                            putString("generateModel", selectedModel)
-                                                            putString("editModel", selectedModel)
-                                                            putString("model", selectedModel)
-                                                        }
-                                                        status = "已发现 ${models.size} 个生图模型，并自动替换为 $selectedModel。"
-                                                    }
+                                                    handleDiscoveredImageModels(models)
                                                 }.onFailure { error ->
                                                     status = "自动寻找模型失败：${error.message ?: "未知错误"}"
                                                 }
