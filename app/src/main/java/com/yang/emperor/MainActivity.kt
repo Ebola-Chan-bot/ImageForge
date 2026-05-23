@@ -285,8 +285,8 @@ fun MainScreen(
     var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("baseUrl", "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(prefs.getString("apiKey", "") ?: "") }
     var apiMode by rememberSaveable { mutableStateOf(ApiMode.from(prefs.getString("apiMode", ApiMode.IMAGES.value))) }
-    var generateModel by rememberSaveable { mutableStateOf(prefs.getString("generateModel", prefs.getString("model", "gpt-image-2")) ?: "gpt-image-2") }
-    var editModel by rememberSaveable { mutableStateOf(prefs.getString("editModel", "gpt-image-2") ?: "gpt-image-2") }
+    var generateModel by rememberSaveable { mutableStateOf(prefs.getString("generateModel", prefs.getString("model", "gpt-image-1")) ?: "gpt-image-1") }
+    var editModel by rememberSaveable { mutableStateOf(prefs.getString("editModel", "gpt-image-1") ?: "gpt-image-1") }
     var customGenerateModel by rememberSaveable { mutableStateOf(generateModel) }
     var customEditModel by rememberSaveable { mutableStateOf(editModel) }
     var prompt by rememberSaveable { mutableStateOf(prefs.getString("prompt", "") ?: "") }
@@ -311,6 +311,8 @@ fun MainScreen(
     var historyNotice by remember { mutableStateOf("") }
     var settingsNotice by remember { mutableStateOf("") }
     var imageBytes by remember { mutableStateOf(null as ByteArray?) }
+    var previewImages by remember { mutableStateOf(emptyList<ByteArray>()) }
+    var selectedPreviewIndex by remember { mutableIntStateOf(0) }
     var previewPrompt by remember { mutableStateOf("") }
     var previewSavedPath by remember { mutableStateOf("") }
     var history by remember { mutableStateOf(loadHistory(prefs)) }
@@ -599,7 +601,7 @@ fun MainScreen(
                 val result = withContext(Dispatchers.IO) {
                     if (task.imageBytes != null) {
                         when (task.apiMode) {
-                            ApiMode.IMAGES -> callEdit(
+                            ApiMode.IMAGES -> listOf(callEdit(
                                 baseUrl = task.baseUrl,
                                 apiKey = task.apiKey,
                                 model = task.model,
@@ -610,8 +612,8 @@ fun MainScreen(
                                 outputFormat = task.outputFormat,
                                 background = task.background,
                                 requestId = task.id
-                            )
-                            ApiMode.RESPONSES -> callEditResponses(
+                            ))
+                            ApiMode.RESPONSES -> listOf(callEditResponses(
                                 baseUrl = task.baseUrl,
                                 apiKey = task.apiKey,
                                 model = task.model,
@@ -622,8 +624,8 @@ fun MainScreen(
                                 outputFormat = task.outputFormat,
                                 background = task.background,
                                 requestId = task.id
-                            )
-                            ApiMode.GENERATIONS_EDIT -> callEditGenerationsCompat(
+                            ))
+                            ApiMode.GENERATIONS_EDIT -> listOf(callEditGenerationsCompat(
                                 model = task.model,
                                 prompt = task.prompt,
                                 imageBytes = task.imageBytes,
@@ -632,10 +634,10 @@ fun MainScreen(
                                 size = task.size,
                                 quality = task.quality,
                                 requestId = task.id
-                            )
+                            ))
                         }
                     } else {
-                        callGenerate(
+                        callGenerateImages(
                             baseUrl = task.baseUrl,
                             apiKey = task.apiKey,
                             model = task.model,
@@ -651,29 +653,55 @@ fun MainScreen(
                     return@launch
                 }
 
-                imageBytes = result
+                val results = result.filter { it.isNotEmpty() }
+                val firstResult = results.firstOrNull() ?: error("图片生成接口未返回有效图片数据")
+                imageBytes = firstResult
+                previewImages = results
+                selectedPreviewIndex = 0
                 previewPrompt = task.prompt
                 if (task.id !in runningTasks || task.id in cancelledTaskIds) {
                     return@launch
                 }
 
-                val savedResult = runCatching {
-                    saveImageToAppFiles(context, result, task.outputFormat)
-                }
-                val savedUri = savedResult.getOrNull().orEmpty()
-                previewSavedPath = savedUri
-
-                if (savedUri.startsWith("content://")) {
-                    history = history.map {
-                        if (it.time == task.time && it.prompt == task.prompt && it.state == "running") {
-                            it.copy(path = savedUri, state = "success", error = "")
-                        } else it
+                val savedUris = mutableListOf<String>()
+                var saveError: Throwable? = null
+                results.forEach { bytes ->
+                    val savedResult = runCatching {
+                        saveImageToAppFiles(context, bytes, task.outputFormat)
                     }
+                    val savedUri = savedResult.getOrNull().orEmpty()
+                    if (savedUri.startsWith("content://")) {
+                        savedUris.add(savedUri)
+                    } else if (saveError == null) {
+                        saveError = savedResult.exceptionOrNull()
+                    }
+                }
+                val firstSavedUri = savedUris.firstOrNull().orEmpty()
+                previewSavedPath = firstSavedUri
+
+                if (savedUris.isNotEmpty()) {
+                    val successItems = savedUris.mapIndexed { index, uri ->
+                        HistoryItem(
+                            time = if (index == 0) task.time else "${task.time} #${index + 1}",
+                            mode = task.mode,
+                            model = task.model,
+                            prompt = if (savedUris.size > 1) "${task.prompt}\n\n第 ${index + 1}/${savedUris.size} 张" else task.prompt,
+                            path = uri,
+                            state = "success"
+                        )
+                    }
+                    history = successItems + history.filterNot {
+                        it.time == task.time && it.prompt == task.prompt && it.state == "running"
+                    }
+                    history = history.take(50)
                     saveHistory(prefs, history)
-                    historyNotice = "后台任务完成，已保存到应用记录；需要相册文件时请手动点击保存。"
-                    notifyImageReady(context, savedUri)
+                    historyNotice = if (savedUris.size > 1) {
+                        "后台任务完成，已保存 ${savedUris.size} 张图片到应用记录。"
+                    } else {
+                        "后台任务完成，已保存到应用记录；需要相册文件时请手动点击保存。"
+                    }
+                    notifyImageReady(context, firstSavedUri)
                 } else {
-                    val saveError = savedResult.exceptionOrNull()
                     val detailedError = "图片生成成功，但写入应用内部图片记录失败：${saveError?.message ?: "未获得可读取的图片 URI"}"
                     history = history.map {
                         if (it.time == task.time && it.prompt == task.prompt && it.state == "running") {
@@ -1268,8 +1296,8 @@ fun MainScreen(
                 baseUrl = ""
                 apiKey = ""
                 apiMode = ApiMode.IMAGES
-                generateModel = "gpt-image-2"
-                editModel = "gpt-image-2"
+                generateModel = "gpt-image-1"
+                editModel = "gpt-image-1"
                 customGenerateModel = generateModel
                 customEditModel = editModel
                 customSaveDirectoryUriString = ""
@@ -1609,8 +1637,11 @@ fun MainScreen(
                     }
                 }
 
-                imageBytes?.let { bytes ->
+                imageBytes?.let { _ ->
                     item {
+                        val currentPreviewImages = if (previewImages.isNotEmpty()) previewImages else listOfNotNull(imageBytes)
+                        val safePreviewIndex = selectedPreviewIndex.coerceIn(0, currentPreviewImages.lastIndex)
+                        val bytes = currentPreviewImages[safePreviewIndex]
                         val bitmap = remember(bytes) {
                             decodePreviewBitmap(bytes)
                         }
@@ -1672,6 +1703,38 @@ fun MainScreen(
                                                 .aspectRatio(bitmap.width.toFloat() / bitmap.height.toFloat())
                                         )
                                     }
+                                    if (currentPreviewImages.size > 1) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.Center,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            currentPreviewImages.forEachIndexed { index, _ ->
+                                                val selected = index == safePreviewIndex
+                                                Surface(
+                                                    modifier = Modifier
+                                                        .padding(horizontal = 4.dp)
+                                                        .size(34.dp)
+                                                        .clickable {
+                                                            selectedPreviewIndex = index
+                                                            imageBytes = currentPreviewImages[index]
+                                                            status = "正在预览第 ${index + 1}/${currentPreviewImages.size} 张。"
+                                                        },
+                                                    shape = CircleShape,
+                                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Text(
+                                                            text = (index + 1).toString(),
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 14.sp
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1706,6 +1769,8 @@ fun MainScreen(
                                         TextButton(
                                             onClick = {
                                                 imageBytes = null
+                                                previewImages = emptyList()
+                                                selectedPreviewIndex = 0
                                                 previewPrompt = ""
                                                 previewSavedPath = ""
                                                 status = "已关闭结果预览。"

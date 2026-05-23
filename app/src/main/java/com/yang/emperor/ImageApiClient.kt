@@ -71,23 +71,43 @@ fun callGenerate(
     size: String,
     quality: String,
     requestId: String? = null
-): ByteArray {
+): ByteArray = callGenerateImages(
+    baseUrl = baseUrl,
+    apiKey = apiKey,
+    model = model,
+    prompt = prompt,
+    n = n,
+    size = size,
+    quality = quality,
+    requestId = requestId
+).first()
+
+fun callGenerateImages(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    n: Int,
+    size: String,
+    quality: String,
+    requestId: String? = null
+): List<ByteArray> {
     require(apiKey.isNotBlank()) { "请填写 API Key" }
     require(model.isNotBlank()) { "请填写模型 ID" }
     require(prompt.isNotBlank()) { "请填写 Prompt" }
 
+    val requestedCount = n.coerceIn(1, 10)
     val body = JSONObject()
         .put("model", model.trim())
         .put("prompt", prompt)
-        .put("n", n.coerceIn(1, 10))
+        .put("n", requestedCount)
         .put("size", size)
         .put("quality", quality)
 
     return withNetworkRetries("文生图请求") {
         val conn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
         try {
-            writeJsonBody(conn, body)
-            parseImageResponse(conn)
+            parseImageResponsesAfterWrite(conn, body)
         } finally {
             closeConnection(requestId, conn)
         }
@@ -256,21 +276,47 @@ fun callEditResponses(
     }
 }
 
-fun parseImageResponse(conn: HttpURLConnection): ByteArray {
+private fun parseImageResponsesAfterWrite(conn: HttpURLConnection, body: JSONObject): List<ByteArray> {
+    writeJsonBody(conn, body)
+    return parseImageResponses(conn)
+}
+
+fun parseImageResponse(conn: HttpURLConnection): ByteArray = parseImageResponses(conn).first()
+
+fun parseImageResponses(conn: HttpURLConnection): List<ByteArray> {
     val code = readResponseCode(conn)
     val text = readResponseTextSafely(conn, code)
     if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
 
     val data = JSONObject(text).optJSONArray("data") ?: error("响应缺少 data")
-    val first = data.optJSONObject(0) ?: error("响应 data 为空")
+    if (data.length() == 0) error("响应 data 为空")
 
-    val b64 = first.optString("b64_json", "")
-    if (b64.isNotBlank()) return decodeBase64Image(b64)
+    val images = mutableListOf<ByteArray>()
+    val itemErrors = mutableListOf<String>()
+    for (index in 0 until data.length()) {
+        val item = data.optJSONObject(index)
+        if (item == null) {
+            itemErrors.add("第 ${index + 1} 项不是有效图片对象")
+            continue
+        }
 
-    val url = first.optString("url", "")
-    if (url.isNotBlank()) return download(url)
+        val b64 = item.optString("b64_json", "")
+        if (b64.isNotBlank()) {
+            images.add(decodeBase64Image(b64))
+            continue
+        }
 
-    error("响应中既没有 url 也没有 b64_json")
+        val url = item.optString("url", "")
+        if (url.isNotBlank()) {
+            images.add(download(url))
+            continue
+        }
+
+        itemErrors.add("第 ${index + 1} 项既没有 url 也没有 b64_json")
+    }
+
+    if (images.isNotEmpty()) return images
+    error(itemErrors.firstOrNull() ?: "响应中没有可用图片数据")
 }
 
 fun parseResponsesImageResponse(conn: HttpURLConnection): ByteArray {

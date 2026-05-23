@@ -53,9 +53,9 @@ data class SizeOption(
 )
 
 val imageModels = listOf(
-    "gpt-image-2",
-    "prime/gpt-image-2",
-    "mix/gpt-image-2"
+    "gpt-image-1",
+    "dall-e-3",
+    "dall-e-2"
 )
 
 val generationSizes = listOf(
