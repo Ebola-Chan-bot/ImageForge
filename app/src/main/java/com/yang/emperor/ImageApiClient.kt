@@ -105,11 +105,27 @@ fun callGenerateImages(
         .put("quality", quality)
 
     return withNetworkRetries("文生图请求") {
-        val conn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
+        val imageConn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
         try {
-            parseImageResponsesAfterWrite(conn, body)
+            val imageResult = parseImageResponsesAfterWriteOrNull(imageConn, body)
+            if (imageResult != null) return@withNetworkRetries imageResult
         } finally {
-            closeConnection(requestId, conn)
+            closeConnection(requestId, imageConn)
+        }
+
+        val chatConn = openPostConnection(endpoint(baseUrl, "/chat/completions"), apiKey, requestId = requestId)
+        try {
+            val chatBody = JSONObject()
+                .put("model", model.trim())
+                .put("stream", false)
+                .put("messages", JSONArray().put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("content", buildChatImagePrompt(prompt, requestedCount, size, quality))
+                ))
+            parseChatCompletionImageResponsesAfterWrite(chatConn, chatBody)
+        } finally {
+            closeConnection(requestId, chatConn)
         }
     }
 }
@@ -281,13 +297,30 @@ private fun parseImageResponsesAfterWrite(conn: HttpURLConnection, body: JSONObj
     return parseImageResponses(conn)
 }
 
+private fun parseImageResponsesAfterWriteOrNull(conn: HttpURLConnection, body: JSONObject): List<ByteArray>? {
+    writeJsonBody(conn, body)
+    val code = readResponseCode(conn)
+    val text = readResponseTextSafely(conn, code)
+    if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_BAD_REQUEST || code == HttpURLConnection.HTTP_METHOD_NOT_ALLOWED) {
+        val message = text.lowercase()
+        if (message.contains("cannot post") || message.contains("not found") || message.contains("unknown endpoint") || message.contains("unsupported")) {
+            return null
+        }
+    }
+    if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+    return parseImageResponsesFromText(text)
+}
+
 fun parseImageResponse(conn: HttpURLConnection): ByteArray = parseImageResponses(conn).first()
 
 fun parseImageResponses(conn: HttpURLConnection): List<ByteArray> {
     val code = readResponseCode(conn)
     val text = readResponseTextSafely(conn, code)
     if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+    return parseImageResponsesFromText(text)
+}
 
+private fun parseImageResponsesFromText(text: String): List<ByteArray> {
     val data = JSONObject(text).optJSONArray("data") ?: error("响应缺少 data")
     if (data.length() == 0) error("响应 data 为空")
 
@@ -317,6 +350,65 @@ fun parseImageResponses(conn: HttpURLConnection): List<ByteArray> {
 
     if (images.isNotEmpty()) return images
     error(itemErrors.firstOrNull() ?: "响应中没有可用图片数据")
+}
+
+private fun buildChatImagePrompt(prompt: String, count: Int, size: String, quality: String): String {
+    return buildString {
+        append("Generate ")
+        append(count)
+        append(" image")
+        if (count > 1) append("s")
+        append(". Size: ")
+        append(size)
+        append(". Quality: ")
+        append(quality)
+        append(". Prompt: ")
+        append(prompt)
+    }
+}
+
+private fun parseChatCompletionImageResponsesAfterWrite(conn: HttpURLConnection, body: JSONObject): List<ByteArray> {
+    writeJsonBody(conn, body)
+    val code = readResponseCode(conn)
+    val text = readResponseTextSafely(conn, code)
+    if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+
+    val choices = JSONObject(text).optJSONArray("choices") ?: error("Chat Completions 响应缺少 choices")
+    val images = mutableListOf<ByteArray>()
+    val errors = mutableListOf<String>()
+    for (choiceIndex in 0 until choices.length()) {
+        val message = choices.optJSONObject(choiceIndex)?.optJSONObject("message")
+        val content = message?.optString("content", "").orEmpty()
+        extractImageUrls(content).forEach { url ->
+            runCatching { images.add(download(url)) }
+                .onFailure { errors.add("图片下载失败：${it.message.orEmpty()}") }
+        }
+        extractInlineBase64Images(content).forEach { b64 ->
+            runCatching { images.add(decodeBase64Image(b64)) }
+                .onFailure { errors.add("Base64 图片解析失败：${it.message.orEmpty()}") }
+        }
+    }
+    if (images.isNotEmpty()) return images
+    error(errors.firstOrNull() ?: "Chat Completions 响应中没有发现图片链接或 base64 图片数据")
+}
+
+private fun extractImageUrls(text: String): List<String> {
+    val urls = mutableListOf<String>()
+    val markdown = Regex("!\\[[^\\]]*\\]\\((https?://[^\\s)]+)\\)")
+    markdown.findAll(text).forEach { urls.add(it.groupValues[1].trim()) }
+    val plain = Regex("https?://[^\\s)\\]"'<>]+")
+    plain.findAll(text).forEach { match ->
+        val value = match.value.trim().trimEnd('.', ',', ';')
+        if (value.contains("image", ignoreCase = true) || value.contains("file", ignoreCase = true) || value.contains("cdn", ignoreCase = true)) {
+            urls.add(value)
+        }
+    }
+    return urls.distinct()
+}
+
+private fun extractInlineBase64Images(text: String): List<String> {
+    val dataUrls = Regex("data:image/[^;]+;base64,([A-Za-z0-9+/=\\r\\n]+)")
+    return dataUrls.findAll(text).map { it.groupValues[1] }.toList()
 }
 
 fun parseResponsesImageResponse(conn: HttpURLConnection): ByteArray {
