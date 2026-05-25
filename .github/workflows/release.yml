@@ -1,10 +1,6 @@
 name: Release Android APK
 
 on:
-  workflow_run:
-    workflows: ["Build Android APK"]
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       tag_name:
@@ -14,8 +10,8 @@ on:
         default: ""
 
 concurrency:
-  group: android-release-${{ github.event.workflow_run.head_branch || github.ref_name }}
-  cancel-in-progress: true
+  group: android-release-manual-${{ github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -26,10 +22,6 @@ env:
 
 jobs:
   release:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -37,7 +29,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          ref: main
           fetch-depth: 0
 
       - name: Resolve release variables
@@ -171,14 +163,20 @@ jobs:
           - 修复文生图“生成数量”只显示/保存第一张的问题：现在会解析接口返回的全部 `data[]` 图片。
           - 多图生成完成后会保存多张图片记录，并在预览区下方显示 1/2/3/4/5 等序号用于切换。
           - 优化多图保存、历史记录和完成提示，使实际返回几张就记录几张。
+          - 长图预览已限制高度并支持在图片区域内上下滑动，描述词、保存、分享、关闭等按钮可继续下滑查看。
 
           #### 模型配置
           - 模型推荐项调整为：`gpt-image-1`、`gpt-image-1.5`、`gpt-image-2`，同时保留自定义输入。
           - 新增并保留“自动寻找生图模型”：支持从当前接口 `/models` 列表中筛选 id 或元数据中带有 image / imagine / gpt-image / dall-e 等特征的生图模型。
-            - 当网关不支持 `/images/generations` 时，会自动回退到 `/chat/completions`，解析 Markdown 图片链接或 Base64 图片数据，兼容 Grok Imagine 类生图模型。
+            - 当网关不支持 `/images/generations`，或 Grok Imagine 类网关返回 500/server_error 时，会自动回退到 `/chat/completions`，解析 Markdown 图片链接或 Base64 图片数据。
+          - 对 `grok-imagine` / `imagine-image` / `image-lite` 等模型优先使用 Chat Completions 生图路径，避免不兼容网关硬怼 Images API。
           - 允许使用 HTTP Base URL，兼容内网、自建网关和临时代理地址。
           - 发现单个生图模型时自动写入文生图/图生图模型配置；发现多个时弹出二级列表供选择。
           - 模型下拉列表会合并自动发现结果与内置推荐模型。
+
+          #### 发布流程
+          - 自动发布已迁移到 Build Android APK 工作流：构建成功后同流程直接刷新 v2.3 Release。
+          - 当前 Release Android APK 工作流仅作为手动兜底发布入口。
 
           #### 配置与体验
           - 去除 Base URL 默认值，首次配置与重置配置后不再自动填入官方接口地址。
