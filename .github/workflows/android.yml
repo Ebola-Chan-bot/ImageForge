@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -274,3 +274,77 @@ jobs:
             app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
+
+
+      - name: Publish APK to GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          VERSION_NAME="$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)"
+          TAG_NAME="v$VERSION_NAME"
+          RELEASE_SHA="${GITHUB_SHA}"
+          mkdir -p dist
+          RELEASE_APK="$(find app/build/outputs/apk/release -name '*release*.apk' -print -quit 2>/dev/null || true)"
+          test -n "$RELEASE_APK"
+          cp "$RELEASE_APK" dist/app-release.apk
+          ls -lah dist/app-release.apk
+
+          BODY_FILE="$RUNNER_TEMP/release-body.md"
+          cat > "$BODY_FILE" <<'BODY'
+          ### ImageForge v2.3 版本说明
+
+          #### 生成与多图
+          - 修复文生图“生成数量”只显示/保存第一张的问题：现在会解析接口返回的全部 `data[]` 图片。
+          - 多图生成完成后会保存多张图片记录，并在预览区下方显示 1/2/3/4/5 等序号用于切换。
+          - 优化多图保存、历史记录和完成提示，使实际返回几张就记录几张。
+          - 长图预览已限制高度并支持在图片区域内上下滑动，描述词、保存、分享、关闭等按钮可继续下滑查看。
+
+          #### 模型配置
+          - 模型推荐项调整为：`gpt-image-1`、`gpt-image-1.5`、`gpt-image-2`，同时保留自定义输入。
+          - 新增并保留“自动寻找生图模型”：支持从当前接口 `/models` 列表中筛选 id 或元数据中带有 image / imagine / gpt-image / dall-e 等特征的生图模型。
+            - 当网关不支持 `/images/generations`，或 Grok Imagine 类网关返回 500/server_error 时，会自动回退到 `/chat/completions`，解析 Markdown 图片链接或 Base64 图片数据。
+          - 对 `grok-imagine` / `imagine-image` / `image-lite` 等模型优先使用 Chat Completions 生图路径，避免不兼容网关硬怼 Images API。
+          - 允许使用 HTTP Base URL，兼容内网、自建网关和临时代理地址。
+          - 发现单个生图模型时自动写入文生图/图生图模型配置；发现多个时弹出二级列表供选择。
+          - 模型下拉列表会合并自动发现结果与内置推荐模型。
+
+          #### 发布流程
+          - 优化自动发布链路：Build Android APK 成功后会在同一工作流内直接刷新 v2.3 Release，避免 workflow_run skipped 造成误判。
+          - Release Android APK 工作流保留为手动兜底发布入口。
+
+          #### 配置与体验
+          - 去除 Base URL 默认值，首次配置与重置配置后不再自动填入官方接口地址。
+          - 保留手动填写 Base URL、API Key、模型 ID、尺寸、画质、输出格式等能力。
+
+          ### 下载
+          请在本页面下方 Assets 中下载：
+          - `app-release.apk`
+          BODY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME" --force || true
+          git tag -f "$TAG_NAME" "$RELEASE_SHA"
+          git push origin "refs/tags/$TAG_NAME" --force
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --target "$RELEASE_SHA" \
+              --title "ImageForge $TAG_NAME" \
+              --notes-file "$BODY_FILE" \
+              --latest
+          else
+            gh release create "$TAG_NAME" \
+              --target "$RELEASE_SHA" \
+              --title "ImageForge $TAG_NAME" \
+              --notes-file "$BODY_FILE" \
+              --latest
+          fi
+
+          gh release delete-asset "$TAG_NAME" app-release.apk -y || true
+          gh release delete-asset "$TAG_NAME" app-debug.apk -y || true
+          gh release upload "$TAG_NAME" dist/app-release.apk --clobber
