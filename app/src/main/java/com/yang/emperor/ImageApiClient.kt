@@ -371,34 +371,75 @@ fun discoverImageModels(baseUrl: String, apiKey: String): List<String> {
             if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
 
             val data = JSONObject(text).optJSONArray("data") ?: JSONArray()
-            val models = mutableListOf<String>()
+            val models = mutableListOf<ModelCandidate>()
             for (index in 0 until data.length()) {
-                val id = data.optJSONObject(index)?.optString("id", "").orEmpty().trim()
-                if (id.isNotBlank() && isImageGenerationModelId(id)) {
-                    models.add(id)
+                val item = data.optJSONObject(index) ?: continue
+                val id = item.optString("id", "").orEmpty().trim()
+                if (id.isNotBlank()) {
+                    imageGenerationModelScore(item, id).takeIf { it > 0 }?.let { score ->
+                        models.add(ModelCandidate(id, score))
+                    }
                 }
             }
-            models.distinct()
+            models
+                .groupBy { it.id }
+                .map { (_, candidates) -> candidates.maxBy { it.score } }
+                .sortedWith(compareByDescending<ModelCandidate> { it.score }.thenBy { it.id })
+                .map { it.id }
         } finally {
             conn.disconnect()
         }
     }
 }
 
-private fun isImageGenerationModelId(id: String): Boolean {
-    val normalized = id.lowercase()
-    val includeKeywords = listOf(
-        "image", "img", "dall-e", "dalle", "gpt-image", "imagen",
-        "flux", "sdxl", "stable-diffusion", "stable_diffusion", "midjourney",
-        "qwen-image", "seedream", "jimeng", "kolors", "ideogram", "recraft"
+private data class ModelCandidate(val id: String, val score: Int)
+
+private fun imageGenerationModelScore(item: JSONObject, id: String): Int {
+    val searchable = buildString {
+        append(id.lowercase())
+        append(' ')
+        append(item.optString("type", "").lowercase())
+        append(' ')
+        append(item.optString("object", "").lowercase())
+        append(' ')
+        append(item.optString("owned_by", "").lowercase())
+        append(' ')
+        append(item.toString().lowercase())
+    }
+    val includeScores = listOf(
+        "gpt-image" to 120,
+        "image_generation" to 110,
+        "image-generation" to 110,
+        "image generation" to 110,
+        "text-to-image" to 100,
+        "image" to 90,
+        "imagine" to 90,
+        "dall-e" to 90,
+        "dalle" to 90,
+        "imagen" to 90,
+        "flux" to 80,
+        "sdxl" to 80,
+        "stable-diffusion" to 80,
+        "stable_diffusion" to 80,
+        "midjourney" to 80,
+        "qwen-image" to 80,
+        "seedream" to 80,
+        "jimeng" to 80,
+        "kolors" to 80,
+        "ideogram" to 80,
+        "recraft" to 80,
+        "grok-imagine" to 80
     )
     val excludeKeywords = listOf(
         "embedding", "text-embedding", "audio", "speech", "tts", "transcribe",
         "whisper", "moderation", "rerank", "vision-preview", "realtime",
         "chat", "instruct", "asr", "ocr"
     )
-    return includeKeywords.any { normalized.contains(it) } &&
-        excludeKeywords.none { normalized.contains(it) }
+    val score = includeScores.filter { searchable.contains(it.first) }.maxOfOrNull { it.second } ?: 0
+    if (score == 0) return 0
+    val idLower = id.lowercase()
+    if (excludeKeywords.any { idLower.contains(it) } && !idLower.contains("image")) return 0
+    return score
 }
 
 fun download(url: String): ByteArray {
