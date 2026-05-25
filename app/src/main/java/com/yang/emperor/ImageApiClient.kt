@@ -105,12 +105,14 @@ fun callGenerateImages(
         .put("quality", quality)
 
     return withNetworkRetries("文生图请求") {
-        val imageConn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
-        try {
-            val imageResult = parseImageResponsesAfterWriteOrNull(imageConn, body)
-            if (imageResult != null) return@withNetworkRetries imageResult
-        } finally {
-            closeConnection(requestId, imageConn)
+        if (!prefersChatCompletionImageEndpoint(model)) {
+            val imageConn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
+            try {
+                val imageResult = parseImageResponsesAfterWriteOrNull(imageConn, body)
+                if (imageResult != null) return@withNetworkRetries imageResult
+            } finally {
+                closeConnection(requestId, imageConn)
+            }
         }
 
         val chatConn = openPostConnection(endpoint(baseUrl, "/chat/completions"), apiKey, requestId = requestId)
@@ -301,9 +303,14 @@ private fun parseImageResponsesAfterWriteOrNull(conn: HttpURLConnection, body: J
     writeJsonBody(conn, body)
     val code = readResponseCode(conn)
     val text = readResponseTextSafely(conn, code)
-    if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_BAD_REQUEST || code == 405) {
+    if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_BAD_REQUEST || code == 405 || code == HttpURLConnection.HTTP_INTERNAL_ERROR) {
         val message = text.lowercase()
-        if (message.contains("cannot post") || message.contains("not found") || message.contains("unknown endpoint") || message.contains("unsupported")) {
+        if (message.contains("cannot post") ||
+            message.contains("not found") ||
+            message.contains("unknown endpoint") ||
+            message.contains("unsupported") ||
+            message.contains("internal server error") ||
+            message.contains("server_error")) {
             return null
         }
     }
@@ -366,6 +373,14 @@ private fun buildChatImagePrompt(prompt: String, count: Int, size: String, quali
         append(prompt)
     }
 }
+
+private fun prefersChatCompletionImageEndpoint(model: String): Boolean {
+    val id = model.lowercase()
+    return id.contains("grok-imagine") ||
+        id.contains("imagine-image") ||
+        id.contains("image-lite")
+}
+
 
 private fun parseChatCompletionImageResponsesAfterWrite(conn: HttpURLConnection, body: JSONObject): List<ByteArray> {
     writeJsonBody(conn, body)
