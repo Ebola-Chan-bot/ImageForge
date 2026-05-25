@@ -995,7 +995,12 @@ fun MainScreen(
             onDismissRequest = { previewHistoryItem = null },
             title = { Text(dialogTitle) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 620.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     when (item.state) {
                         "success" -> {
                             if (previewBitmap != null) {
@@ -1695,14 +1700,22 @@ fun MainScreen(
                                             .border(1.dp, Color(0xFFD9E1F5), RoundedCornerShape(20.dp))
                                             .padding(8.dp)
                                     ) {
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = null,
+                                        Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .aspectRatio(bitmap.width.toFloat() / bitmap.height.toFloat())
-                                        )
+                                                .heightIn(max = 520.dp)
+                                                .verticalScroll(rememberScrollState())
+                                        ) {
+                                            Image(
+                                                bitmap = bitmap.asImageBitmap(),
+                                                contentDescription = null,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .aspectRatio(bitmap.width.toFloat() / bitmap.height.toFloat())
+                                            )
+                                        }
                                     }
+                                    StatusCard("长图已限制预览高度，可在图片区域内上下滑动；下方描述词和按钮可继续查看。")
                                     if (currentPreviewImages.size > 1) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
