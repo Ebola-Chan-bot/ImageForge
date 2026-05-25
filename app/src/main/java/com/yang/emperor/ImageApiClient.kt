@@ -301,7 +301,7 @@ private fun parseImageResponsesAfterWriteOrNull(conn: HttpURLConnection, body: J
     writeJsonBody(conn, body)
     val code = readResponseCode(conn)
     val text = readResponseTextSafely(conn, code)
-    if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_BAD_REQUEST || code == HttpURLConnection.HTTP_METHOD_NOT_ALLOWED) {
+    if (code == HttpURLConnection.HTTP_NOT_FOUND || code == HttpURLConnection.HTTP_BAD_REQUEST || code == 405) {
         val message = text.lowercase()
         if (message.contains("cannot post") || message.contains("not found") || message.contains("unknown endpoint") || message.contains("unsupported")) {
             return null
@@ -396,7 +396,7 @@ private fun extractImageUrls(text: String): List<String> {
     val urls = mutableListOf<String>()
     val markdown = Regex("!\\[[^\\]]*\\]\\((https?://[^\\s)]+)\\)")
     markdown.findAll(text).forEach { urls.add(it.groupValues[1].trim()) }
-    val plain = Regex("https?://[^\\s)\\]"'<>]+")
+    val plain = Regex("https?://[^\\s)\\]\\\"'<>]+")
     plain.findAll(text).forEach { match ->
         val value = match.value.trim().trimEnd('.', ',', ';')
         if (value.contains("image", ignoreCase = true) || value.contains("file", ignoreCase = true) || value.contains("cdn", ignoreCase = true)) {
