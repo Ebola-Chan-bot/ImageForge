@@ -297,22 +297,8 @@ jobs:
           cat > "$BODY_FILE" <<BODY
           ### ImageForge $TAG_NAME
 
-          一个轻量的 Android 图像生成应用，支持文生图、参考图生成、自动寻找生图模型与历史管理。
-
-          #### 功能概览
-          - 文生图与参考图生成，单次稳定生成一张。
-          - 自动寻找生图模型：从接口 \`/models\` 中筛选图像生成相关模型并自动填入。
-          - 接口兼容：网关不支持 \`/images/generations\` 或返回 500/server_error 时自动回退到 \`/chat/completions\`，解析图片链接或 Base64 数据。
-          - 支持 HTTP 明文 Base URL，兼容内网、自建网关与临时代理。
-          - 后台任务、历史记录、错误详情排查，长图预览可上下滑动查看。
-
-          #### 配置项
-          - Base URL、API Key、接口模式、文生图 / 图生图模型 ID。
-          - 图片尺寸、画质、输出格式、背景模式。
-
           ### 下载
-          请在本页面下方 Assets 中下载：
-          - \`app-release.apk\`
+          在本页面下方 Assets 中下载 \`app-release.apk\` 安装即可。
           BODY
 
           git config user.name "github-actions[bot]"
@@ -322,10 +308,9 @@ jobs:
           git push origin "refs/tags/$TAG_NAME" --force
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            # Release 已存在：只刷新提交目标与 APK，保留人工维护的版本说明。
             gh release edit "$TAG_NAME" \
               --target "$RELEASE_SHA" \
-              --title "ImageForge $TAG_NAME" \
-              --notes-file "$BODY_FILE" \
               --latest
           else
             gh release create "$TAG_NAME" \
