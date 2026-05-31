@@ -154,7 +154,6 @@ private fun detailedTaskErrorMessage(e: Exception, task: ImageTask): String {
         appendLine("- 模型：${task.model}")
         appendLine("- 尺寸：${task.size}")
         appendLine("- 质量：${task.quality}")
-        appendLine("- 数量：${task.count}")
         appendLine("- 输出格式：${task.outputFormat}")
         appendLine("- Prompt：${task.prompt}")
     }
@@ -282,19 +281,20 @@ fun MainScreen(
 
     var currentRoute by rememberSaveable { mutableStateOf(ScreenRoute.MAIN) }
 
-    var baseUrl by rememberSaveable { mutableStateOf(prefs.getString("baseUrl", "") ?: "") }
-    var apiKey by rememberSaveable { mutableStateOf(prefs.getString("apiKey", "") ?: "") }
-    var apiMode by rememberSaveable { mutableStateOf(ApiMode.from(prefs.getString("apiMode", ApiMode.IMAGES.value))) }
-    var generateModel by rememberSaveable { mutableStateOf(prefs.getString("generateModel", prefs.getString("model", "gpt-image-1")) ?: "gpt-image-1") }
-    var editModel by rememberSaveable { mutableStateOf(prefs.getString("editModel", "gpt-image-1") ?: "gpt-image-1") }
+    var baseUrl by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BASE_URL, "") ?: "") }
+    var apiKey by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.API_KEY, "") ?: "") }
+    var apiMode by rememberSaveable { mutableStateOf(ApiMode.from(prefs.getString(ConfigKeys.API_MODE, ApiMode.IMAGES.value))) }
+    var generateModel by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.GENERATE_MODEL, prefs.getString(ConfigKeys.MODEL, "gpt-image-1")) ?: "gpt-image-1") }
+    var editModel by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.EDIT_MODEL, "gpt-image-1") ?: "gpt-image-1") }
     var customGenerateModel by rememberSaveable { mutableStateOf(generateModel) }
     var customEditModel by rememberSaveable { mutableStateOf(editModel) }
-    var prompt by rememberSaveable { mutableStateOf(prefs.getString("prompt", "") ?: "") }
-    var size by rememberSaveable { mutableStateOf(prefs.getString("size", "1024x1024") ?: "1024x1024") }
-    var quality by rememberSaveable { mutableStateOf(prefs.getString("quality", "auto") ?: "auto") }
-    var count by rememberSaveable { mutableStateOf(prefs.getString("count", "1") ?: "1") }
-    var outputFormat by rememberSaveable { mutableStateOf(prefs.getString("outputFormat", "png") ?: "png") }
-    var background by rememberSaveable { mutableStateOf(prefs.getString("background", "auto") ?: "auto") }
+    var prompt by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.PROMPT, "") ?: "") }
+    var size by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.SIZE, "1024x1024") ?: "1024x1024") }
+    var quality by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.QUALITY, "auto") ?: "auto") }
+    // 生成数量固定为 1，不再提供修改入口（单次只生成一张）。
+    val count = "1"
+    var outputFormat by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.OUTPUT_FORMAT, "png") ?: "png") }
+    var background by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BACKGROUND, "auto") ?: "auto") }
     var editMode by rememberSaveable { mutableStateOf(false) }
     var selectedImage by remember { mutableStateOf(null as Uri?) }
     var selectedImageBytes by remember { mutableStateOf(null as ByteArray?) }
@@ -320,7 +320,7 @@ fun MainScreen(
     val selectedHistoryKeys = remember { mutableStateListOf<String>() }
     var showAdvancedOptions by rememberSaveable { mutableStateOf(false) }
     val shouldShowInitialOnboarding = remember {
-        !prefs.getBoolean("onboardingDone", false) && (apiKey.isBlank() || baseUrl.isBlank())
+        !prefs.getBoolean(ConfigKeys.ONBOARDING_DONE, false) && (apiKey.isBlank() || baseUrl.isBlank())
     }
     var showOnboarding by remember { mutableStateOf(shouldShowInitialOnboarding) }
     var onboardingReturnRoute by remember { mutableStateOf(ScreenRoute.MAIN.name) }
@@ -328,7 +328,7 @@ fun MainScreen(
     val runningTasks = remember { mutableStateListOf<String>() }
     val runningTaskJobs = remember { mutableMapOf<String, Job>() }
     val cancelledTaskIds = remember { mutableStateListOf<String>() }
-    var customSaveDirectoryUriString by rememberSaveable { mutableStateOf(prefs.getString("customSaveDirectoryUri", "") ?: "") }
+    var customSaveDirectoryUriString by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.CUSTOM_SAVE_DIRECTORY_URI, "") ?: "") }
     val customSaveDirectoryUri = customSaveDirectoryUriString.takeIf { it.isNotBlank() }?.let { it.toUri() }
     val saveDirectoryLabel = readableSaveDirectoryLabel(customSaveDirectoryUriString)
 
@@ -339,9 +339,9 @@ fun MainScreen(
         customGenerateModel = selectedModel
         customEditModel = selectedModel
         prefs.edit {
-            putString("generateModel", selectedModel)
-            putString("editModel", selectedModel)
-            putString("model", selectedModel)
+            putString(ConfigKeys.GENERATE_MODEL, selectedModel)
+            putString(ConfigKeys.EDIT_MODEL, selectedModel)
+            putString(ConfigKeys.MODEL, selectedModel)
         }
     }
 
@@ -388,7 +388,7 @@ fun MainScreen(
                 context.contentResolver.takePersistableUriPermission(uri, flags)
             }
             customSaveDirectoryUriString = uri.toString()
-            prefs.edit { putString("customSaveDirectoryUri", customSaveDirectoryUriString) }
+            prefs.edit { putString(ConfigKeys.CUSTOM_SAVE_DIRECTORY_URI, customSaveDirectoryUriString) }
             settingsNotice = "图片保存路径已更新。"
         }
     }
@@ -757,15 +757,15 @@ fun MainScreen(
                 onBaseUrlChange = { baseUrl = it },
                 onApiKeyChange = { apiKey = it },
                 onSkip = {
-                    prefs.edit { putBoolean("onboardingDone", true) }
+                    prefs.edit { putBoolean(ConfigKeys.ONBOARDING_DONE, true) }
                     showOnboarding = false
                     currentRoute = runCatching { ScreenRoute.valueOf(onboardingReturnRoute) }.getOrDefault(ScreenRoute.MAIN)
                 },
                 onSave = {
                     prefs.edit {
-                        putString("baseUrl", baseUrl.trim())
-                        putString("apiKey", apiKey.trim())
-                        putBoolean("onboardingDone", true)
+                        putString(ConfigKeys.BASE_URL, baseUrl.trim())
+                        putString(ConfigKeys.API_KEY, apiKey.trim())
+                        putBoolean(ConfigKeys.ONBOARDING_DONE, true)
                     }
                     settingsNotice = "接口信息已保存。"
                     status = ""
@@ -952,10 +952,10 @@ fun MainScreen(
             Button(
                 onClick = {
                     prefs.edit {
-                        putString("apiMode", apiMode.value)
-                        putString("generateModel", generateModel.trim())
-                        putString("editModel", editModel.trim())
-                        putString("model", generateModel.trim())
+                        putString(ConfigKeys.API_MODE, apiMode.value)
+                        putString(ConfigKeys.GENERATE_MODEL, generateModel.trim())
+                        putString(ConfigKeys.EDIT_MODEL, editModel.trim())
+                        putString(ConfigKeys.MODEL, generateModel.trim())
                     }
                     status = "接口与模型已保存，将用于下一次生成。"
                     showModelSheet = false
@@ -1188,7 +1188,7 @@ fun MainScreen(
                         "${it.title} · ${it.value}" == display
                     }?.let {
                         size = it.value
-                        prefs.edit { putString("size", it.value) }
+                        prefs.edit { putString(ConfigKeys.SIZE, it.value) }
                     }
                 }
             )
@@ -1198,7 +1198,7 @@ fun MainScreen(
                 options = qualityOptions,
                 onSelected = {
                     quality = it
-                    prefs.edit { putString("quality", it) }
+                    prefs.edit { putString(ConfigKeys.QUALITY, it) }
                 }
             )
             AppDropdownField(
@@ -1207,7 +1207,7 @@ fun MainScreen(
                 options = outputFormats,
                 onSelected = {
                     outputFormat = it
-                    prefs.edit { putString("outputFormat", it) }
+                    prefs.edit { putString(ConfigKeys.OUTPUT_FORMAT, it) }
                 }
             )
             AppDropdownField(
@@ -1216,16 +1216,7 @@ fun MainScreen(
                 options = backgroundOptions,
                 onSelected = {
                     background = it
-                    prefs.edit { putString("background", it) }
-                }
-            )
-            AppDropdownField(
-                title = "生成数量",
-                selected = count,
-                options = (1..10).map { it.toString() },
-                onSelected = {
-                    count = it
-                    prefs.edit { putString("count", it) }
+                    prefs.edit { putString(ConfigKeys.BACKGROUND, it) }
                 }
             )
             Button(
@@ -1283,20 +1274,20 @@ fun MainScreen(
             onBack = { currentRoute = ScreenRoute.MAIN },
             onClearConfig = {
                 prefs.edit {
-                    remove("baseUrl")
-                    remove("apiKey")
-                    remove("apiMode")
-                    remove("generateModel")
-                    remove("editModel")
-                    remove("model")
-                    remove("customSaveDirectoryUri")
-                    remove("prompt")
-                    remove("size")
-                    remove("quality")
-                    remove("count")
-                    remove("outputFormat")
-                    remove("background")
-                    remove("onboardingDone")
+                    remove(ConfigKeys.BASE_URL)
+                    remove(ConfigKeys.API_KEY)
+                    remove(ConfigKeys.API_MODE)
+                    remove(ConfigKeys.GENERATE_MODEL)
+                    remove(ConfigKeys.EDIT_MODEL)
+                    remove(ConfigKeys.MODEL)
+                    remove(ConfigKeys.CUSTOM_SAVE_DIRECTORY_URI)
+                    remove(ConfigKeys.PROMPT)
+                    remove(ConfigKeys.SIZE)
+                    remove(ConfigKeys.QUALITY)
+                    remove(ConfigKeys.COUNT)
+                    remove(ConfigKeys.OUTPUT_FORMAT)
+                    remove(ConfigKeys.BACKGROUND)
+                    remove(ConfigKeys.ONBOARDING_DONE)
                 }
                 baseUrl = ""
                 apiKey = ""
@@ -1312,13 +1303,13 @@ fun MainScreen(
             onShowOnboarding = {},
             onSave = {
                 prefs.edit {
-                    putString("baseUrl", baseUrl.trim())
-                    putString("apiKey", apiKey.trim())
-                    putString("apiMode", apiMode.value)
-                    putString("generateModel", generateModel.trim())
-                    putString("editModel", editModel.trim())
-                    putString("model", generateModel.trim())
-                    putBoolean("onboardingDone", true)
+                    putString(ConfigKeys.BASE_URL, baseUrl.trim())
+                    putString(ConfigKeys.API_KEY, apiKey.trim())
+                    putString(ConfigKeys.API_MODE, apiMode.value)
+                    putString(ConfigKeys.GENERATE_MODEL, generateModel.trim())
+                    putString(ConfigKeys.EDIT_MODEL, editModel.trim())
+                    putString(ConfigKeys.MODEL, generateModel.trim())
+                    putBoolean(ConfigKeys.ONBOARDING_DONE, true)
                 }
                 settingsNotice = "接口设置已保存。"
                 status = ""
@@ -1387,7 +1378,7 @@ fun MainScreen(
                                 value = prompt,
                                 onValueChange = {
                                     prompt = it
-                                    prefs.edit { putString("prompt", it) }
+                                    prefs.edit { putString(ConfigKeys.PROMPT, it) }
                                 },
                                 label = { Text(if (editMode) "编辑指令" else "图片描述 Prompt") },
                                 placeholder = {
@@ -1493,19 +1484,18 @@ fun MainScreen(
                                         }
 
                                         prefs.edit {
-                                            putString("baseUrl", baseUrl.trim())
-                                            putString("apiKey", apiKey.trim())
-                                            putString("apiMode", apiMode.value)
-                                            putString("generateModel", generateModel.trim())
-                                            putString("editModel", editModel.trim())
-                                            putString("model", generateModel.trim())
-                                            putString("prompt", prompt)
-                                            putString("size", size)
-                                            putString("quality", quality)
-                                            putString("count", count)
-                                            putString("outputFormat", outputFormat)
-                                            putString("background", background)
-                                            putBoolean("onboardingDone", true)
+                                            putString(ConfigKeys.BASE_URL, baseUrl.trim())
+                                            putString(ConfigKeys.API_KEY, apiKey.trim())
+                                            putString(ConfigKeys.API_MODE, apiMode.value)
+                                            putString(ConfigKeys.GENERATE_MODEL, generateModel.trim())
+                                            putString(ConfigKeys.EDIT_MODEL, editModel.trim())
+                                            putString(ConfigKeys.MODEL, generateModel.trim())
+                                            putString(ConfigKeys.PROMPT, prompt)
+                                            putString(ConfigKeys.SIZE, size)
+                                            putString(ConfigKeys.QUALITY, quality)
+                                            putString(ConfigKeys.OUTPUT_FORMAT, outputFormat)
+                                            putString(ConfigKeys.BACKGROUND, background)
+                                            putBoolean(ConfigKeys.ONBOARDING_DONE, true)
                                         }
 
                                         val task = ImageTask(
@@ -1564,7 +1554,7 @@ fun MainScreen(
                                         onSelected = { label ->
                                             ApiMode.entries.firstOrNull { it.label == label }?.let {
                                                 apiMode = it
-                                                prefs.edit { putString("apiMode", it.value) }
+                                                prefs.edit { putString(ConfigKeys.API_MODE, it.value) }
                                                 status = "接口模式已保存。"
                                             }
                                         }
@@ -1603,13 +1593,13 @@ fun MainScreen(
                                             if (selectedImage != null) {
                                                 customEditModel = value
                                                 editModel = value
-                                                prefs.edit { putString("editModel", value.trim()) }
+                                                prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }
                                             } else {
                                                 customGenerateModel = value
                                                 generateModel = value
                                                 prefs.edit {
-                                                    putString("generateModel", value.trim())
-                                                    putString("model", value.trim())
+                                                    putString(ConfigKeys.GENERATE_MODEL, value.trim())
+                                                    putString(ConfigKeys.MODEL, value.trim())
                                                 }
                                             }
                                         },
@@ -1617,13 +1607,13 @@ fun MainScreen(
                                             if (selectedImage != null) {
                                                 customEditModel = value
                                                 editModel = value
-                                                prefs.edit { putString("editModel", value.trim()) }
+                                                prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }
                                             } else {
                                                 customGenerateModel = value
                                                 generateModel = value
                                                 prefs.edit {
-                                                    putString("generateModel", value.trim())
-                                                    putString("model", value.trim())
+                                                    putString(ConfigKeys.GENERATE_MODEL, value.trim())
+                                                    putString(ConfigKeys.MODEL, value.trim())
                                                 }
                                             }
                                             status = "模型已保存。"
@@ -1635,7 +1625,7 @@ fun MainScreen(
                             ConfigEntryCard(
                                 title = "生成参数",
                                 primary = selectedSizeOption.title + " · " + selectedSizeOption.value,
-                                secondary = "画质 $quality · $outputFormat · 数量 $count",
+                                secondary = "画质 $quality · $outputFormat",
                                 onClick = { showParamsSheet = true }
                             )
                         }

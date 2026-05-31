@@ -11,10 +11,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private const val LEGACY_CONFIG_PREFS_NAME = "config"
-private const val SECURE_CONFIG_PREFS_NAME = "secure_config"
-private const val SECURE_MIGRATED_FROM_V16 = "secureMigratedFromV16"
-private const val HISTORY_KEY = "history"
 private const val MAX_HISTORY_ITEMS = 50
 
 fun now(): String =
@@ -22,7 +18,7 @@ fun now(): String =
 
 fun secureConfigPreferences(context: Context): SharedPreferences {
     val appContext = context.applicationContext
-    val legacyPrefs = appContext.getSharedPreferences(LEGACY_CONFIG_PREFS_NAME, Context.MODE_PRIVATE)
+    val legacyPrefs = appContext.getSharedPreferences(ConfigKeys.LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
 
     val securePrefs = createEncryptedPreferencesOrNull(appContext)
         ?: return legacyPrefs
@@ -32,7 +28,7 @@ fun secureConfigPreferences(context: Context): SharedPreferences {
 }
 
 fun loadHistory(prefs: SharedPreferences): List<HistoryItem> {
-    val raw = prefs.getString(HISTORY_KEY, "[]") ?: "[]"
+    val raw = prefs.getString(ConfigKeys.HISTORY, "[]") ?: "[]"
     return runCatching {
         val arr = JSONArray(raw)
         (0 until arr.length()).mapNotNull { index ->
@@ -74,7 +70,7 @@ fun saveHistory(prefs: SharedPreferences, items: List<HistoryItem>) {
                 .put("error", item.error)
         )
     }
-    prefs.edit { putString(HISTORY_KEY, arr.toString()) }
+    prefs.edit { putString(ConfigKeys.HISTORY, arr.toString()) }
 }
 
 private fun createEncryptedPreferencesOrNull(context: Context): SharedPreferences? {
@@ -85,7 +81,7 @@ private fun createEncryptedPreferencesOrNull(context: Context): SharedPreference
 
         EncryptedSharedPreferences.create(
             context,
-            SECURE_CONFIG_PREFS_NAME,
+            ConfigKeys.SECURE_PREFS_NAME,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
@@ -97,16 +93,8 @@ private fun migrateLegacyConfigIfNeeded(
     legacyPrefs: SharedPreferences,
     securePrefs: SharedPreferences
 ) {
-    if (securePrefs.getBoolean(SECURE_MIGRATED_FROM_V16, false)) return
-    val keys = listOf(
-        "baseUrl",
-        "apiKey",
-        "apiMode",
-        "generateModel",
-        "editModel",
-        "model",
-        HISTORY_KEY
-    )
+    if (securePrefs.getBoolean(ConfigKeys.SECURE_MIGRATED_FROM_V16, false)) return
+    val keys = ConfigKeys.CONFIG_MIGRATION_KEYS
     securePrefs.edit {
         keys.forEach { key ->
             val value = legacyPrefs.getString(key, null)
@@ -114,7 +102,7 @@ private fun migrateLegacyConfigIfNeeded(
                 putString(key, value)
             }
         }
-        putBoolean(SECURE_MIGRATED_FROM_V16, true)
+        putBoolean(ConfigKeys.SECURE_MIGRATED_FROM_V16, true)
     }
     legacyPrefs.edit {
         keys.forEach { key -> remove(key) }

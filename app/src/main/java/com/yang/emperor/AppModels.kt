@@ -2,6 +2,53 @@ package com.yang.emperor
 
 import androidx.compose.ui.graphics.Color
 
+/**
+ * 应用内统一配置常量。
+ *
+ * 集中维护所有 SharedPreferences 的存储名称与键名，避免在多个文件里散落裸字符串导致拼写不一致、
+ * 静默丢配置。这里的字符串值与历史版本保持完全一致，因此升级后老用户的本地配置不会丢失。
+ */
+object ConfigKeys {
+    // SharedPreferences 存储名称
+    const val LEGACY_PREFS_NAME = "config"
+    const val SECURE_PREFS_NAME = "secure_config"
+
+    // 安全存储迁移标记
+    const val SECURE_MIGRATED_FROM_V16 = "secureMigratedFromV16"
+
+    // 配置项键名
+    const val BASE_URL = "baseUrl"
+    const val API_KEY = "apiKey"
+    const val API_MODE = "apiMode"
+    const val GENERATE_MODEL = "generateModel"
+    const val EDIT_MODEL = "editModel"
+    const val MODEL = "model"
+    const val ONBOARDING_DONE = "onboardingDone"
+    const val PROMPT = "prompt"
+    const val SIZE = "size"
+    const val QUALITY = "quality"
+    const val COUNT = "count"
+    const val OUTPUT_FORMAT = "outputFormat"
+    const val BACKGROUND = "background"
+    const val CUSTOM_SAVE_DIRECTORY_URI = "customSaveDirectoryUri"
+
+    // 历史记录
+    const val HISTORY = "history"
+
+    /** 需要在普通存储与加密存储之间迁移的配置键集合。 */
+    val CONFIG_MIGRATION_KEYS = listOf(
+        BASE_URL, API_KEY, API_MODE, GENERATE_MODEL, EDIT_MODEL, MODEL, HISTORY
+    )
+}
+
+/** 应用级常量：仓库地址、网络超时等跨界面共享的固定值。 */
+object AppConfig {
+    const val REPO_URL = "https://github.com/Wzindx/ImageForge"
+
+    /** 轻量 UI 网络请求（如开发者头像加载）的连接/读取超时，单位毫秒。 */
+    const val UI_NETWORK_TIMEOUT_MS = 8000
+}
+
 enum class ScreenRoute {
     MAIN,
     HISTORY,

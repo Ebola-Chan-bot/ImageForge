@@ -130,7 +130,7 @@ import java.io.IOException
 
 private const val DEVELOPER_QQ = "2753761311"
 private const val DEVELOPER_QQ_AVATAR_URL = "https://q1.qlogo.cn/g?b=qq&nk=$DEVELOPER_QQ&s=640"
-private const val IMAGEFORGE_REPO_URL = "https://github.com/Wzindx/ImageForge"
+private const val IMAGEFORGE_REPO_URL = AppConfig.REPO_URL
 
 
 private var developerAvatarCache: Bitmap? = null
@@ -141,8 +141,8 @@ private suspend fun loadDeveloperAvatarBitmap(): Bitmap? {
         runCatching {
             val connection = URL(DEVELOPER_QQ_AVATAR_URL).openConnection()
             connection.setRequestProperty("User-Agent", "Mozilla/5.0 ImageForge")
-            connection.connectTimeout = 8000
-            connection.readTimeout = 8000
+            connection.connectTimeout = AppConfig.UI_NETWORK_TIMEOUT_MS
+            connection.readTimeout = AppConfig.UI_NETWORK_TIMEOUT_MS
             connection.getInputStream().use { input ->
                 BitmapFactory.decodeStream(input)
             }
