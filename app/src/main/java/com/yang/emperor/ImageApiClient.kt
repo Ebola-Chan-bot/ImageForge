@@ -62,32 +62,11 @@ fun endpoint(baseUrl: String, path: String): String {
     }
 }
 
-fun callGenerate(
-    baseUrl: String,
-    apiKey: String,
-    model: String,
-    prompt: String,
-    n: Int,
-    size: String,
-    quality: String,
-    requestId: String? = null
-): ByteArray = callGenerateImages(
-    baseUrl = baseUrl,
-    apiKey = apiKey,
-    model = model,
-    prompt = prompt,
-    n = n,
-    size = size,
-    quality = quality,
-    requestId = requestId
-).first()
-
 fun callGenerateImages(
     baseUrl: String,
     apiKey: String,
     model: String,
     prompt: String,
-    n: Int,
     size: String,
     quality: String,
     requestId: String? = null
@@ -96,11 +75,10 @@ fun callGenerateImages(
     require(model.isNotBlank()) { "请填写模型 ID" }
     require(prompt.isNotBlank()) { "请填写 Prompt" }
 
-    val requestedCount = n.coerceIn(1, 10)
     val body = JSONObject()
         .put("model", model.trim())
         .put("prompt", prompt)
-        .put("n", requestedCount)
+        .put("n", 1)
         .put("size", size)
         .put("quality", quality)
 
@@ -123,7 +101,7 @@ fun callGenerateImages(
                 .put("messages", JSONArray().put(
                     JSONObject()
                         .put("role", "user")
-                        .put("content", buildChatImagePrompt(prompt, requestedCount, size, quality))
+                        .put("content", buildChatImagePrompt(prompt, size, quality))
                 ))
             parseChatCompletionImageResponsesAfterWrite(chatConn, chatBody)
         } finally {
@@ -359,13 +337,9 @@ private fun parseImageResponsesFromText(text: String): List<ByteArray> {
     error(itemErrors.firstOrNull() ?: "响应中没有可用图片数据")
 }
 
-private fun buildChatImagePrompt(prompt: String, count: Int, size: String, quality: String): String {
+private fun buildChatImagePrompt(prompt: String, size: String, quality: String): String {
     return buildString {
-        append("Generate ")
-        append(count)
-        append(" image")
-        if (count > 1) append("s")
-        append(". Size: ")
+        append("Generate 1 image. Size: ")
         append(size)
         append(". Quality: ")
         append(quality)

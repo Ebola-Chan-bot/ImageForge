@@ -291,8 +291,6 @@ fun MainScreen(
     var prompt by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.PROMPT, "") ?: "") }
     var size by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.SIZE, "1024x1024") ?: "1024x1024") }
     var quality by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.QUALITY, "auto") ?: "auto") }
-    // 生成数量固定为 1，不再提供修改入口（单次只生成一张）。
-    val count = "1"
     var outputFormat by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.OUTPUT_FORMAT, "png") ?: "png") }
     var background by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BACKGROUND, "auto") ?: "auto") }
     var editMode by rememberSaveable { mutableStateOf(false) }
@@ -642,7 +640,6 @@ fun MainScreen(
                             apiKey = task.apiKey,
                             model = task.model,
                             prompt = task.prompt,
-                            n = task.count.toIntOrNull() ?: 1,
                             size = task.size,
                             quality = task.quality,
                             requestId = task.id
@@ -1284,7 +1281,7 @@ fun MainScreen(
                     remove(ConfigKeys.PROMPT)
                     remove(ConfigKeys.SIZE)
                     remove(ConfigKeys.QUALITY)
-                    remove(ConfigKeys.COUNT)
+                    remove("count")
                     remove(ConfigKeys.OUTPUT_FORMAT)
                     remove(ConfigKeys.BACKGROUND)
                     remove(ConfigKeys.ONBOARDING_DONE)
@@ -1510,7 +1507,6 @@ fun MainScreen(
                                             imageBytes = referenceBytes,
                                             size = size,
                                             quality = quality,
-                                            count = count,
                                             outputFormat = outputFormat,
                                             background = background
                                         )

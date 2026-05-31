@@ -27,7 +27,6 @@ object ConfigKeys {
     const val PROMPT = "prompt"
     const val SIZE = "size"
     const val QUALITY = "quality"
-    const val COUNT = "count"
     const val OUTPUT_FORMAT = "outputFormat"
     const val BACKGROUND = "background"
     const val CUSTOM_SAVE_DIRECTORY_URI = "customSaveDirectoryUri"
@@ -88,7 +87,6 @@ data class ImageTask(
     val imageBytes: ByteArray?,
     val size: String,
     val quality: String,
-    val count: String,
     val outputFormat: String,
     val background: String
 )
