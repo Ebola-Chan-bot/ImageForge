@@ -53,6 +53,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -557,7 +559,7 @@ fun AppEditableDropdownField(
 
 @Composable
 fun StatusCard(status: String) {
-    val isError = status.contains("失败") || status.contains("HTTP")
+    val isError = isErrorNotice(status)
     val bg = if (isError) errorBg else successBg
     val fg = if (isError) errorText else successText
 
@@ -581,6 +583,23 @@ fun StatusCard(status: String) {
             color = fg,
             style = MaterialTheme.typography.bodyMedium
         )
+    }
+}
+
+/**
+ * 显示一段时间后自动消失的提示卡片，用于说明性、非关键的引导文案。
+ * 默认 3 秒后隐藏，避免长期占用预览区域。
+ */
+@Composable
+fun AutoDismissStatusCard(status: String, durationMillis: Long = 3000L) {
+    var visible by remember(status) { mutableStateOf(true) }
+    LaunchedEffect(status) {
+        visible = true
+        delay(durationMillis)
+        visible = false
+    }
+    if (visible) {
+        StatusCard(status)
     }
 }
 

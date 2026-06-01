@@ -140,6 +140,18 @@ private fun copyTextToClipboard(context: Context, label: String, text: String, t
     Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()
 }
 
+/** 判断一条提示是否属于错误/失败类，用于决定配色与显示时长。 */
+fun isErrorNotice(text: String): Boolean =
+    text.contains("失败") || text.contains("错误") || text.contains("HTTP")
+
+/**
+ * 提示自动消失的时长（毫秒）：
+ * 错误类提示保留更久（6 秒）便于看清原因，普通成功/操作反馈较短（2 秒）。
+ * 失败的完整原因仍会保留在历史记录中，可随时查看。
+ */
+fun noticeDisplayMillis(text: String): Long =
+    if (isErrorNotice(text)) 6000L else 2000L
+
 private fun compactErrorMessage(message: String): String {
     return message.lines().firstOrNull { it.isNotBlank() }?.take(140) ?: "未知错误"
 }
@@ -409,21 +421,21 @@ fun MainScreen(
 
     LaunchedEffect(settingsNotice) {
         if (settingsNotice.isNotBlank()) {
-            delay(5000)
+            delay(noticeDisplayMillis(settingsNotice))
             settingsNotice = ""
         }
     }
 
     LaunchedEffect(status) {
         if (status.isNotBlank()) {
-            delay(5000)
+            delay(noticeDisplayMillis(status))
             status = ""
         }
     }
 
     LaunchedEffect(historyNotice) {
         if (historyNotice.isNotBlank()) {
-            delay(5000)
+            delay(noticeDisplayMillis(historyNotice))
             historyNotice = ""
         }
     }
@@ -1026,7 +1038,7 @@ fun MainScreen(
                                         )
                                     }
                                 }
-                                StatusCard("图片已生成，可在此查看、打开或分享；长图支持继续下滑查看到底部。")
+                                AutoDismissStatusCard("图片已生成，可在此查看、打开或分享；长图支持继续下滑查看到底部。")
                             } else {
                                 StatusCard("这条记录没有可读取的图片文件，仅保留描述内容。")
                             }
@@ -1701,7 +1713,7 @@ fun MainScreen(
                                             )
                                         }
                                     }
-                                    StatusCard("长图已限制预览高度，可在图片区域内上下滑动；下方描述词和按钮可继续查看。")
+                                    AutoDismissStatusCard("长图已限制预览高度，可在图片区域内上下滑动；下方描述词和按钮可继续查看。")
                                     if (currentPreviewImages.size > 1) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
