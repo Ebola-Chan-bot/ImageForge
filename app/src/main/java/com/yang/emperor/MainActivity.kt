@@ -153,16 +153,16 @@ fun noticeDisplayMillis(text: String): Long =
     if (isErrorNotice(text)) 6000L else 2000L
 
 private fun compactErrorMessage(message: String): String {
-    return message.lines().firstOrNull { it.isNotBlank() }?.take(140) ?: "未知错误"
+    return maskSensitiveInfo(message).lines().firstOrNull { it.isNotBlank() }?.take(140) ?: "未知错误"
 }
 
 private fun detailedTaskErrorMessage(e: Exception, task: ImageTask): String {
-    val rawStack = e.stackTraceToString()
+    val rawStack = maskSensitiveInfo(e.stackTraceToString())
     val taskInfo = buildString {
         appendLine("任务信息：")
         appendLine("- 模式：${task.mode}")
         appendLine("- 接口模式：${task.apiMode.label}")
-        appendLine("- Base URL：${task.baseUrl}")
+        appendLine("- Base URL：${maskSensitiveInfo(task.baseUrl)}")
         appendLine("- 模型：${task.model}")
         appendLine("- 尺寸：${task.size}")
         appendLine("- 质量：${task.quality}")
@@ -501,7 +501,7 @@ fun MainScreen(
                     withContext(Dispatchers.IO) {
                         clearReferenceImageCache(context)
                     }
-                    status = "参考图读取失败：${it.message ?: "未知错误"}，请重新选择。"
+                    status = "参考图读取失败：${friendlyShortErrorMessage(it)}，请重新选择。"
                 }
 
             isReadingReferenceImage = false
@@ -711,7 +711,7 @@ fun MainScreen(
                     }
                     notifyImageReady(context, firstSavedUri)
                 } else {
-                    val detailedError = "图片生成成功，但写入应用内部图片记录失败：${saveError?.message ?: "未获得可读取的图片 URI"}"
+                    val detailedError = "图片生成成功，但写入应用内部图片记录失败：${saveError?.let { friendlyShortErrorMessage(it) } ?: "未获得可读取的图片 URI"}"
                     history = history.map {
                         if (it.time == task.time && it.prompt == task.prompt && it.state == "running") {
                             it.copy(path = "图片文件缺失", state = "failed", error = detailedError)
@@ -950,7 +950,7 @@ fun MainScreen(
                         result.onSuccess { models ->
                             handleDiscoveredImageModels(models)
                         }.onFailure { error ->
-                            status = "自动寻找模型失败：${error.message ?: "未知错误"}"
+                            status = "自动寻找模型失败：${friendlyShortErrorMessage(error)}"
                         }
                     }
                 },
@@ -1119,7 +1119,7 @@ fun MainScreen(
                                     val saved = runCatching {
                                         saveExistingImageToGallery(context, item.path, customSaveDirectoryUri)
                                     }.getOrElse {
-                                        historyNotice = "保存失败：${it.message ?: "图片无法读取"}"
+                                        historyNotice = "保存失败：${friendlyShortErrorMessage(it)}"
                                         return@TextButton
                                     }
                                     historyNotice = "已保存到相册：$saved"
@@ -1584,7 +1584,7 @@ fun MainScreen(
                                                 result.onSuccess { models ->
                                                     handleDiscoveredImageModels(models)
                                                 }.onFailure { error ->
-                                                    status = "自动寻找模型失败：${error.message ?: "未知错误"}"
+                                                    status = "自动寻找模型失败：${friendlyShortErrorMessage(error)}"
                                                 }
                                             }
                                         },
@@ -1758,7 +1758,7 @@ fun MainScreen(
                                                     previewSavedPath = saved
                                                     status = "已保存到相册：$saved"
                                                 }.onFailure {
-                                                    status = "保存失败：${it.message ?: "图片无法写入"}"
+                                                    status = "保存失败：${friendlyShortErrorMessage(it)}"
                                                 }
                                             },
                                             modifier = Modifier.weight(1f)
@@ -1936,7 +1936,7 @@ fun MainScreen(
                                     }.onSuccess {
                                         historyNotice = "已保存到相册：$it"
                                     }.onFailure {
-                                        historyNotice = "保存失败：${it.message ?: "图片无法读取"}"
+                                        historyNotice = "保存失败：${friendlyShortErrorMessage(it)}"
                                     }
                                 }
                             },

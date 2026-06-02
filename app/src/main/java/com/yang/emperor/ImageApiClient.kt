@@ -525,7 +525,9 @@ private fun imageGenerationModelScore(item: JSONObject, id: String): Int {
 
 fun download(url: String): ByteArray {
     return withNetworkRetries("图片下载") {
-        val conn = URL(url).openConnection() as HttpURLConnection
+        val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+            throw IOException("图片下载URL解析失败", e)
+        }
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
         conn.setRequestProperty("Accept", "image/*,*/*")
@@ -576,6 +578,57 @@ private fun <T> withNetworkRetries(operationName: String, block: () -> T): T {
     )
 }
 
+/**
+ * 脱敏：将错误消息中的 API Key / Bearer token 替换为 ***
+ */
+fun maskSensitiveInfo(message: String): String {
+    return message
+        .replace(Regex("""sk-[A-Za-z0-9]{20,}"""), "sk-***")
+        .replace(Regex("""Bearer\s+[A-Za-z0-9\-_]{20,}"""), "Bearer ***")
+}
+
+/**
+ * 从异常中提取用户友好的短提示（一行），自动脱敏
+ */
+fun friendlyShortErrorMessage(e: Throwable): String {
+    val chain = generateSequence(e) { it.cause }.toList()
+    val allText = chain.joinToString(" ") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }
+
+    val hint = when {
+        allText.contains("UnknownHostException", ignoreCase = true) ->
+            "无法解析域名，请检查 Base URL 或网络连接"
+        allText.contains("SocketTimeoutException", ignoreCase = true) ->
+            "连接超时，请检查网络或切换代理节点"
+        allText.contains("Invalid host", ignoreCase = true) ->
+            "Base URL 格式不正确，请检查是否包含多余内容"
+        allText.contains("For input string", ignoreCase = true) ->
+            "URL 解析失败，请检查 Base URL 格式是否正确"
+        allText.contains("NumberFormatException", ignoreCase = true) ->
+            "地址格式解析错误，请检查 Base URL"
+        allText.contains("ConnectException", ignoreCase = true) ->
+            "连接被拒绝，请检查地址或代理节点是否可用"
+        allText.contains("SSLHandshakeException", ignoreCase = true) ||
+        allText.contains("SSL", ignoreCase = true) ->
+            "SSL 连接失败，请检查证书或尝试关闭/开启代理"
+        allText.contains("Software caused connection abort", ignoreCase = true) ->
+            "连接中断，请切换代理节点后重试"
+        allText.contains("unexpected end of stream", ignoreCase = true) ||
+        allText.contains("EOFException", ignoreCase = true) ->
+            "连接提前断开，请检查网络稳定性或更换节点"
+        allText.contains("HTTP 401", ignoreCase = true) ->
+            "认证失败，请检查 API Key 是否正确"
+        allText.contains("HTTP 403", ignoreCase = true) ->
+            "请求被拒绝，请检查权限或额度"
+        allText.contains("HTTP 429", ignoreCase = true) ->
+            "请求过多，已触发限流，请稍后重试"
+        allText.contains("HTTP 5", ignoreCase = true) ->
+            "服务端异常，请稍后重试或更换 Base URL"
+        e is IOException -> "网络请求失败，请检查网络和配置"
+        else -> e.message ?: "未知错误"
+    }
+    return maskSensitiveInfo(hint).take(140)
+}
+
 private fun retryExhaustedIOException(operationName: String, attempts: Int, error: IOException): IOException {
     val message = buildString {
         append(operationName)
@@ -585,7 +638,7 @@ private fun retryExhaustedIOException(operationName: String, attempts: Int, erro
         append("这通常表示当前 VPN/代理节点、网关转发、Base URL 中转服务或目标接口在读取响应时不稳定。")
         append("建议切换代理节点、关闭/开启代理对比测试，或更换更稳定的 Base URL。")
         append("\n\n最后一次错误：\n")
-        append(error.message.orEmpty())
+        append(maskSensitiveInfo(error.message.orEmpty()))
     }
     return IOException(message, error)
 }
@@ -615,7 +668,10 @@ private fun openPostConnection(
     contentType: String = "application/json",
     requestId: String? = null
 ): HttpURLConnection {
-    return trackConnection(requestId, (URL(url).openConnection() as HttpURLConnection).apply {
+    val parsedConn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+        throw IOException("URL解析失败，请检查 Base URL 格式", e)
+    }
+    return trackConnection(requestId, parsedConn.apply {
         requestMethod = "POST"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
@@ -628,7 +684,10 @@ private fun openPostConnection(
 }
 
 private fun openGetConnection(url: String, apiKey: String): HttpURLConnection {
-    return (URL(url).openConnection() as HttpURLConnection).apply {
+    val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+        throw IOException("URL解析失败，请检查 Base URL 格式", e)
+    }
+    return conn.apply {
         requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
@@ -666,7 +725,10 @@ private fun readResponseTextSafely(conn: HttpURLConnection, code: Int): String {
 }
 
 private fun friendlyNetworkIOException(error: Throwable, stage: String): IOException {
-    val chain = generateSequence(error) { it.cause }.toList()
+    val wrapped: Throwable = if (error !is IOException && error is RuntimeException) {
+        IOException("URL解析或连接异常: ${error.message.orEmpty()}", error)
+    } else error
+    val chain = generateSequence(wrapped) { it.cause }.toList()
     val allMessages = chain.joinToString("\n") { cause ->
         "${cause.javaClass.name}: ${cause.message.orEmpty()}"
     }
@@ -688,10 +750,10 @@ private fun friendlyNetworkIOException(error: Throwable, stage: String): IOExcep
         append("\n")
         append(hint)
         append("\n\n原始异常链：\n")
-        append(allMessages.ifBlank { "${error.javaClass.name}: ${error.message.orEmpty()}" })
+        append(maskSensitiveInfo(allMessages.ifBlank { "${wrapped.javaClass.simpleName}: ${wrapped.message.orEmpty()}" }))
     }
 
-    return IOException(message, error)
+    return IOException(message, wrapped as? IOException ?: IOException(wrapped.message, wrapped))
 }
 
 private fun decodeBase64Image(value: String): ByteArray {
