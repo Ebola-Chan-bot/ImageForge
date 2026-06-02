@@ -16,8 +16,9 @@ import java.util.concurrent.ConcurrentHashMap
 private const val CONNECT_TIMEOUT_MS = 30_000
 private const val READ_TIMEOUT_MS = 180_000
 private const val MAX_ERROR_BODY_CHARS = 20_000
-private const val MAX_NETWORK_ATTEMPTS = 3
+private const val MAX_NETWORK_ATTEMPTS = 5
 private const val RETRY_DELAY_MS = 800L
+private const val APP_USER_AGENT = "ImageForge/2.5"
 
 private val activeImageConnections = ConcurrentHashMap<String, MutableSet<HttpURLConnection>>()
 
@@ -531,7 +532,8 @@ fun download(url: String): ByteArray {
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
         conn.setRequestProperty("Accept", "image/*,*/*")
-        conn.setRequestProperty("Connection", "close")
+        conn.setRequestProperty("User-Agent", APP_USER_AGENT)
+        conn.setRequestProperty("Connection", "keep-alive")
 
         try {
             val code = readResponseCode(conn, "图片下载")
@@ -671,6 +673,7 @@ private fun openPostConnection(
     val parsedConn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
         throw IOException("URL解析失败，请检查 Base URL 格式", e)
     }
+    parsedConn.setRequestProperty("Connection", "keep-alive")
     return trackConnection(requestId, parsedConn.apply {
         requestMethod = "POST"
         connectTimeout = CONNECT_TIMEOUT_MS
@@ -679,7 +682,7 @@ private fun openPostConnection(
         setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
         setRequestProperty("Content-Type", contentType)
         setRequestProperty("Accept", "application/json")
-        setRequestProperty("Connection", "close")
+        setRequestProperty("User-Agent", APP_USER_AGENT)
     })
 }
 
@@ -687,13 +690,14 @@ private fun openGetConnection(url: String, apiKey: String): HttpURLConnection {
     val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
         throw IOException("URL解析失败，请检查 Base URL 格式", e)
     }
+    conn.setRequestProperty("Connection", "keep-alive")
     return conn.apply {
         requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
         setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
         setRequestProperty("Accept", "application/json")
-        setRequestProperty("Connection", "close")
+        setRequestProperty("User-Agent", APP_USER_AGENT)
     }
 }
 
