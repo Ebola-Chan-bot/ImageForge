@@ -11,6 +11,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import androidx.core.net.toUri
 import java.io.IOException
 import android.net.Uri
@@ -231,10 +232,15 @@ fun saveImageToAppFiles(
     format: String
 ): String {
     require(bytes.isNotEmpty()) { "图片数据为空，无法写入应用记录" }
+    require(BitmapFactory.decodeByteArray(bytes, 0, bytes.size) != null) {
+        "接口返回的数据不是可解析图片，已拒绝写入成功记录"
+    }
 
     val normalizedFormat = normalizeImageFormat(format)
     val generatedDir = File(context.filesDir, "generated_images").apply {
-        if (!exists()) mkdirs()
+        if (!exists() && !mkdirs()) {
+            throw IOException("无法创建应用内部图片目录")
+        }
     }
     val imageFile = File(
         generatedDir,
@@ -246,16 +252,25 @@ fun saveImageToAppFiles(
             output.write(bytes)
             output.flush()
         }
+        if (!imageFile.isFile || imageFile.length() <= 0L) {
+            throw IOException("图片文件写入后为空")
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            imageFile
+        )
+        val readable = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input) != null
+        } == true
+        if (!readable) {
+            throw IOException("图片已写入但无法通过应用 URI 读取")
+        }
+        return uri.toString()
     } catch (e: Exception) {
         runCatching { imageFile.delete() }
-        throw IOException("无法写入应用内部图片记录", e)
+        throw IOException("无法写入可读取的应用内部图片记录", e)
     }
-
-    return FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
-        imageFile
-    ).toString()
 }
 
 fun deleteAppPrivateImageFromHistory(context: Context, imageUri: String): Boolean {

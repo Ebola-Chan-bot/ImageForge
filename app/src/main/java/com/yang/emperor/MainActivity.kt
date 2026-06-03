@@ -1061,7 +1061,7 @@ fun MainScreen(
                                 }
                                 AutoDismissStatusCard("图片已生成，可在此查看、打开或分享；长图支持继续下滑查看到底部。")
                             } else {
-                                StatusCard("这条记录没有可读取的图片文件，仅保留描述内容。")
+                                StatusCard("这条记录标记为成功，但图片文件不可读取；请重新生成或删除该记录。")
                             }
                         }
                         "running" -> {
