@@ -400,13 +400,13 @@ private fun parseImageResponsesFromText(text: String): List<ByteArray> {
             continue
         }
 
-        val b64 = item.optString("b64_json", "")
+        val b64 = item.safeOptString("b64_json")
         if (b64.isNotBlank()) {
             images.add(decodeBase64Image(b64))
             continue
         }
 
-        val url = item.optString("url", "")
+        val url = item.safeOptString("url")
         if (url.isNotBlank()) {
             images.add(download(url))
             continue
@@ -449,7 +449,7 @@ private fun parseChatCompletionImageResponsesAfterWrite(conn: HttpURLConnection,
     val errors = mutableListOf<String>()
     for (choiceIndex in 0 until choices.length()) {
         val message = choices.optJSONObject(choiceIndex)?.optJSONObject("message")
-        val content = message?.optString("content", "").orEmpty()
+        val content = message?.safeOptString("content").orEmpty()
         extractImageUrls(content).forEach { url ->
             runCatching { images.add(download(url)) }
                 .onFailure { errors.add("图片下载失败：${it.message.orEmpty()}") }
@@ -493,7 +493,7 @@ fun parseResponsesImageResponse(conn: HttpURLConnection): ByteArray {
         val item = output.optJSONObject(index) ?: continue
         if (item.optString("type") != "image_generation_call") continue
 
-        val result = item.optString("result", "")
+        val result = item.safeOptString("result")
         if (result.isNotBlank()) {
             return decodeBase64Image(result)
         }
@@ -503,18 +503,18 @@ fun parseResponsesImageResponse(conn: HttpURLConnection): ByteArray {
         val item = output.optJSONObject(index) ?: continue
         if (item.optString("type") != "image_generation_call") continue
 
-        val resultUrl = item.optString("url", "")
+        val resultUrl = item.safeOptString("url")
         if (resultUrl.isNotBlank()) {
             return download(resultUrl)
         }
 
         val nested = item.optJSONObject("result")
-        val nestedUrl = nested?.optString("url", "") ?: ""
+        val nestedUrl = nested?.safeOptString("url") ?: ""
         if (nestedUrl.isNotBlank()) {
             return download(nestedUrl)
         }
 
-        val nestedB64 = nested?.optString("b64_json", "") ?: ""
+        val nestedB64 = nested?.safeOptString("b64_json") ?: ""
         if (nestedB64.isNotBlank()) {
             return decodeBase64Image(nestedB64)
         }
@@ -613,26 +613,64 @@ fun download(url: String): ByteArray {
         }
         conn.connectTimeout = CONNECT_TIMEOUT_MS
         conn.readTimeout = READ_TIMEOUT_MS
-        conn.setRequestProperty("Accept", "image/*,*/*")
-        conn.setRequestProperty("User-Agent", APP_USER_AGENT)
+        conn.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) ImageForge/2.5")
         conn.setRequestProperty("Connection", "keep-alive")
 
         try {
             val code = readResponseCode(conn, "图片下载")
+            val contentType = conn.contentType.orEmpty()
             if (code !in 200..299) {
                 val errorText = readResponseTextSafely(conn, code).truncateForError()
                 error("图片下载失败 HTTP $code: $errorText")
             }
-            runCatching {
+            val bytes = runCatching {
                 conn.inputStream.use { it.readBytes() }
             }.getOrElse { e ->
                 throw friendlyNetworkIOException(e, "图片下载响应体读取失败")
             }
+            if (bytes.isEmpty()) {
+                error("图片下载失败：响应体为空")
+            }
+            if (!looksLikeImageContentType(contentType) && !isProbablyImageBytes(bytes)) {
+                error(
+                    "图片 URL 下载到的不是图片。Content-Type: ${contentType.ifBlank { "未知" }}，" +
+                        "前缀: ${previewDownloadedText(bytes)}"
+                )
+            }
+            if (!isProbablyImageBytes(bytes)) {
+                error(
+                    "图片 URL 下载结果无法识别为 PNG/JPEG/WEBP/GIF。Content-Type: ${contentType.ifBlank { "未知" }}，" +
+                        "前缀: ${previewDownloadedText(bytes)}"
+                )
+            }
+            bytes
         } finally {
             conn.disconnect()
         }
     }
 }
+
+private fun looksLikeImageContentType(contentType: String): Boolean =
+    contentType.startsWith("image/", ignoreCase = true)
+
+private fun isProbablyImageBytes(bytes: ByteArray): Boolean {
+    if (bytes.size < 12) return false
+    val png = bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()
+    val jpg = bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
+    val gif = bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte()
+    val riffWebp = bytes[0] == 0x52.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte() &&
+        bytes[3] == 0x46.toByte() && bytes[8] == 0x57.toByte() && bytes[9] == 0x45.toByte() &&
+        bytes[10] == 0x42.toByte() && bytes[11] == 0x50.toByte()
+    return png || jpg || gif || riffWebp
+}
+
+private fun previewDownloadedText(bytes: ByteArray): String =
+    bytes.copyOfRange(0, minOf(bytes.size, 120)).toString(Charsets.UTF_8)
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .take(120)
+
 
 private fun <T> withNetworkRetries(operationName: String, block: () -> T): T {
     var lastError: IOException? = null
@@ -844,11 +882,19 @@ private fun friendlyNetworkIOException(error: Throwable, stage: String): IOExcep
     return IOException(message, wrapped as? IOException ?: IOException(wrapped.message, wrapped))
 }
 
+private fun JSONObject.safeOptString(name: String): String {
+    if (!has(name) || isNull(name)) return ""
+    val value = optString(name, "").trim()
+    if (value.equals("null", ignoreCase = true)) return ""
+    return value
+}
+
 private fun decodeBase64Image(value: String): ByteArray {
     val pureBase64 = value
         .removePrefix("data:image/png;base64,")
         .removePrefix("data:image/jpeg;base64,")
         .removePrefix("data:image/webp;base64,")
+    require(pureBase64.isNotBlank()) { "Base64 图片数据为空" }
     return Base64.decode(pureBase64, Base64.DEFAULT)
 }
 
