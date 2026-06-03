@@ -76,21 +76,35 @@ fun callGenerateImages(
     require(model.isNotBlank()) { "请填写模型 ID" }
     require(prompt.isNotBlank()) { "请填写 Prompt" }
 
-    val body = JSONObject()
-        .put("model", model.trim())
+    fun imageBody(modelId: String, requestQuality: String): JSONObject = JSONObject()
+        .put("model", modelId.trim())
         .put("prompt", prompt)
         .put("n", 1)
         .put("size", size)
-        .put("quality", quality)
+        .put("quality", requestQuality)
+
+    val imageModel = model.trim()
+    val imageQuality = normalizeImageQualityForModel(imageModel, quality)
+    val fallbackModel = canonicalAgnesModelIdOrNull(imageModel)
 
     return withNetworkRetries("文生图请求") {
         if (!prefersChatCompletionImageEndpoint(model)) {
             val imageConn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
             try {
-                val imageResult = parseImageResponsesAfterWriteOrNull(imageConn, body)
+                val imageResult = parseImageResponsesAfterWriteOrNull(imageConn, imageBody(imageModel, imageQuality))
                 if (imageResult != null) return@withNetworkRetries imageResult
             } finally {
                 closeConnection(requestId, imageConn)
+            }
+
+            if (!fallbackModel.isNullOrBlank() && !fallbackModel.equals(imageModel, ignoreCase = false)) {
+                val fallbackConn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
+                try {
+                    val fallbackResult = parseImageResponsesAfterWriteOrNull(fallbackConn, imageBody(fallbackModel, imageQuality))
+                    if (fallbackResult != null) return@withNetworkRetries fallbackResult
+                } finally {
+                    closeConnection(requestId, fallbackConn)
+                }
             }
         }
 
@@ -427,6 +441,29 @@ private fun buildChatImagePrompt(prompt: String, size: String, quality: String):
         append(quality)
         append(". Prompt: ")
         append(prompt)
+    }
+}
+
+private fun normalizeImageQualityForModel(model: String, quality: String): String {
+    val normalized = quality.trim().lowercase()
+    val id = model.lowercase()
+    return if (id.startsWith("agnes-image")) {
+        when (normalized) {
+            "high", "hd" -> "hd"
+            "low", "medium", "standard", "auto", "" -> "standard"
+            else -> normalized
+        }
+    } else {
+        quality
+    }
+}
+
+private fun canonicalAgnesModelIdOrNull(model: String): String? {
+    val parts = model.trim().split('-').filter { it.isNotBlank() }
+    if (parts.size < 3) return null
+    if (!parts[0].equals("agnes", ignoreCase = true) || !parts[1].equals("image", ignoreCase = true)) return null
+    return parts.joinToString("-") { part ->
+        part.replaceFirstChar { ch -> ch.uppercase() }
     }
 }
 
