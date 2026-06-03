@@ -647,15 +647,36 @@ fun MainScreen(
                             ))
                         }
                     } else {
-                        callGenerateImages(
-                            baseUrl = task.baseUrl,
-                            apiKey = task.apiKey,
-                            model = task.model,
-                            prompt = task.prompt,
-                            size = task.size,
-                            quality = task.quality,
-                            requestId = task.id
-                        )
+                        when (task.apiMode) {
+                            ApiMode.IMAGES -> callGenerateImages(
+                                baseUrl = task.baseUrl,
+                                apiKey = task.apiKey,
+                                model = task.model,
+                                prompt = task.prompt,
+                                size = task.size,
+                                quality = task.quality,
+                                requestId = task.id
+                            )
+                            ApiMode.RESPONSES -> callGenerateResponses(
+                                baseUrl = task.baseUrl,
+                                apiKey = task.apiKey,
+                                model = task.model,
+                                prompt = task.prompt,
+                                size = task.size,
+                                quality = task.quality,
+                                outputFormat = task.outputFormat,
+                                requestId = task.id
+                            )
+                            ApiMode.GENERATIONS_EDIT -> callGenerateChatCompat(
+                                baseUrl = task.baseUrl,
+                                apiKey = task.apiKey,
+                                model = task.model,
+                                prompt = task.prompt,
+                                size = task.size,
+                                quality = task.quality,
+                                requestId = task.id
+                            )
+                        }
                     }
                 }
                 if (task.id !in runningTasks || task.id in cancelledTaskIds) {

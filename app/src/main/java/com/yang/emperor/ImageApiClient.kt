@@ -111,6 +111,87 @@ fun callGenerateImages(
     }
 }
 
+fun callGenerateResponses(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    size: String,
+    quality: String,
+    outputFormat: String,
+    requestId: String? = null
+): List<ByteArray> {
+    require(apiKey.isNotBlank()) { "请填写 API Key" }
+    require(model.isNotBlank()) { "请填写模型 ID" }
+    require(prompt.isNotBlank()) { "请填写 Prompt" }
+
+    val tool = JSONObject()
+        .put("type", "image_generation")
+        .put("size", size)
+        .put("quality", quality)
+        .put("output_format", outputFormat)
+
+    val body = JSONObject()
+        .put("model", model.trim())
+        .put(
+            "input",
+            JSONArray().put(
+                JSONObject()
+                    .put("role", "user")
+                    .put("content", JSONArray().put(
+                        JSONObject()
+                            .put("type", "input_text")
+                            .put("text", "Use the following text as the complete prompt. Do not rewrite it:
+$prompt")
+                    ))
+            )
+        )
+        .put("tools", JSONArray().put(tool))
+        .put("tool_choice", "required")
+
+    return withNetworkRetries("Responses 文生图请求") {
+        val conn = openPostConnection(endpoint(baseUrl, "/responses"), apiKey, requestId = requestId)
+        try {
+            writeJsonBody(conn, body)
+            listOf(parseResponsesImageResponse(conn))
+        } finally {
+            closeConnection(requestId, conn)
+        }
+    }
+}
+
+fun callGenerateChatCompat(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    size: String,
+    quality: String,
+    requestId: String? = null
+): List<ByteArray> {
+    require(apiKey.isNotBlank()) { "请填写 API Key" }
+    require(model.isNotBlank()) { "请填写模型 ID" }
+    require(prompt.isNotBlank()) { "请填写 Prompt" }
+
+    val body = JSONObject()
+        .put("model", model.trim())
+        .put("stream", false)
+        .put("messages", JSONArray().put(
+            JSONObject()
+                .put("role", "user")
+                .put("content", buildChatImagePrompt(prompt, size, quality))
+        ))
+
+    return withNetworkRetries("Chat 文生图请求") {
+        val conn = openPostConnection(endpoint(baseUrl, "/chat/completions"), apiKey, requestId = requestId)
+        try {
+            parseChatCompletionImageResponsesAfterWrite(conn, body)
+        } finally {
+            closeConnection(requestId, conn)
+        }
+    }
+}
+
 fun callEdit(
     baseUrl: String,
     apiKey: String,
@@ -288,6 +369,7 @@ private fun parseImageResponsesAfterWriteOrNull(conn: HttpURLConnection, body: J
             message.contains("not found") ||
             message.contains("unknown endpoint") ||
             message.contains("unsupported") ||
+            message.contains("requires an image model") ||
             message.contains("internal server error") ||
             message.contains("server_error")) {
             return null
@@ -489,6 +571,7 @@ private fun imageGenerationModelScore(item: JSONObject, id: String): Int {
         append(item.toString().lowercase())
     }
     val includeScores = listOf(
+        "agnes-image" to 130,
         "gpt-image" to 120,
         "image_generation" to 110,
         "image-generation" to 110,
@@ -619,6 +702,8 @@ fun friendlyShortErrorMessage(e: Throwable): String {
             "连接提前断开，请检查网络稳定性或更换节点"
         allText.contains("HTTP 401", ignoreCase = true) ->
             "认证失败，请检查 API Key 是否正确"
+        allText.contains("requires an image model", ignoreCase = true) ->
+            "当前 Base URL/中转未把该模型识别为图片模型；Agnes 模型请优先使用官方 Base URL 和 Images API"
         allText.contains("HTTP 403", ignoreCase = true) ->
             "请求被拒绝，请检查权限或额度"
         allText.contains("HTTP 429", ignoreCase = true) ->
