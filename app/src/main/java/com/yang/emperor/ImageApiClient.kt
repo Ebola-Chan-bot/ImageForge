@@ -141,8 +141,7 @@ fun callGenerateResponses(
                     .put("content", JSONArray().put(
                         JSONObject()
                             .put("type", "input_text")
-                            .put("text", "Use the following text as the complete prompt. Do not rewrite it:
-$prompt")
+                            .put("text", "Use the following text as the complete prompt. Do not rewrite it:\n$prompt")
                     ))
             )
         )
