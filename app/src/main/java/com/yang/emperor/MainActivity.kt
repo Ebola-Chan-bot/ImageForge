@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -96,6 +98,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,6 +128,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import org.json.JSONArray
 import java.net.URL
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -132,6 +136,21 @@ import java.io.IOException
 
 private object ImageForgeBackgroundRunner {
     val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+}
+
+/** 读取已持久化的“自动寻找生图模型”结果，避免每次打开应用都要重新寻找。 */
+private fun loadDiscoveredImageModels(prefs: SharedPreferences): List<String> {
+    val raw = prefs.getString(ConfigKeys.DISCOVERED_IMAGE_MODELS, "") ?: ""
+    if (raw.isBlank()) return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).mapNotNull { array.optString(it).takeIf { id -> !id.isNullOrBlank() } }
+    }.getOrDefault(emptyList())
+}
+
+/** 持久化“自动寻找生图模型”的结果（JSON 数组）。 */
+private fun saveDiscoveredImageModels(prefs: SharedPreferences, models: List<String>) {
+    prefs.edit { putString(ConfigKeys.DISCOVERED_IMAGE_MODELS, JSONArray(models).toString()) }
 }
 
 private fun copyTextToClipboard(context: Context, label: String, text: String, toastText: String = "已复制到剪贴板") {
@@ -306,12 +325,12 @@ fun MainScreen(
     var outputFormat by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.OUTPUT_FORMAT, "png") ?: "png") }
     var background by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BACKGROUND, "auto") ?: "auto") }
     var editMode by rememberSaveable { mutableStateOf(false) }
-    var selectedImage by remember { mutableStateOf(null as Uri?) }
-    var selectedImageBytes by remember { mutableStateOf(null as ByteArray?) }
+    var selectedImages by remember { mutableStateOf(emptyList<Uri>()) }
+    var selectedImageBytesList by remember { mutableStateOf(emptyList<ByteArray>()) }
     var isReadingReferenceImage by remember { mutableStateOf(false) }
     var showReferenceSheet by remember { mutableStateOf(false) }
     var showModelSheet by remember { mutableStateOf(false) }
-    var discoveredImageModels by remember { mutableStateOf(emptyList<String>()) }
+    var discoveredImageModels by remember { mutableStateOf(loadDiscoveredImageModels(prefs)) }
     var pendingDiscoveredImageModels by remember { mutableStateOf(emptyList<String>()) }
     var showDiscoveredModelPicker by remember { mutableStateOf(false) }
     var isDiscoveringImageModels by remember { mutableStateOf(false) }
@@ -344,6 +363,7 @@ fun MainScreen(
 
     fun applyDiscoveredImageModel(selectedModel: String, models: List<String>) {
         discoveredImageModels = models
+        saveDiscoveredImageModels(prefs, models)
         generateModel = selectedModel
         editModel = selectedModel
         customGenerateModel = selectedModel
@@ -367,6 +387,7 @@ fun MainScreen(
             }
             else -> {
                 discoveredImageModels = models
+                saveDiscoveredImageModels(prefs, models)
                 pendingDiscoveredImageModels = models
                 showDiscoveredModelPicker = true
                 status = "已发现 ${models.size} 个生图模型，请选择要使用的模型。"
@@ -403,17 +424,20 @@ fun MainScreen(
         }
     }
 
-    val currentSizes = if (editMode) editSizes else generationSizes
+    val currentSizes = when (apiMode) {
+        ApiMode.ATLAS_CLOUD -> atlasSizes
+        else -> if (editMode) editSizes else generationSizes
+    }
     val selectedSizeOption = currentSizes.firstOrNull { it.value == size } ?: currentSizes.first()
     val modelOptions = remember(discoveredImageModels) {
         (discoveredImageModels + imageModels).distinct()
     }
 
-    LaunchedEffect(selectedImage) {
-        editMode = selectedImage != null
+    LaunchedEffect(selectedImages) {
+        editMode = selectedImages.isNotEmpty()
     }
 
-    LaunchedEffect(editMode) {
+    LaunchedEffect(editMode, apiMode) {
         if (currentSizes.none { it.value == size }) {
             size = currentSizes.first().value
         }
@@ -457,47 +481,47 @@ fun MainScreen(
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        selectedImage = uri
-        selectedImageBytes = null
-
-        if (uri == null) {
-            isReadingReferenceImage = false
-            status = ""
-            activityTaskScope.launch(Dispatchers.IO) {
-                clearReferenceImageCache(context)
-            }
+    // 用 GetMultipleContents（ACTION_GET_CONTENT）而非 OpenMultipleDocuments：
+    // 荣耀/华为等国产系统的“文件”选择器会忽略多选标记只允许单选，
+    // 而 GET_CONTENT 通常唤起图库，支持勾选多张；参考图字节会立即缓存，无需持久化权限。
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isEmpty()) {
+            // 用户取消选择：保留原有参考图不变
             return@rememberLauncherForActivityResult
         }
 
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        selectedImages = uris
+        selectedImageBytesList = emptyList()
+
+        uris.forEach { uri ->
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
 
         showReferenceSheet = false
         isReadingReferenceImage = true
-        status = "正在读取并缓存参考图..."
+        status = "正在读取并缓存 ${uris.size} 张参考图..."
 
         activityTaskScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    clearReferenceImageCache(context)
-                    cacheReferenceImageBytes(context, uri)
+                    cacheMultipleReferenceImageBytes(context, uris)
                 }
             }
 
-            if (selectedImage != uri) {
+            if (selectedImages != uris) {
                 return@launch
             }
 
             result
-                .onSuccess { bytes ->
-                    selectedImageBytes = bytes
-                    status = "参考图已读取并缓存，将用于下一次图生图。"
+                .onSuccess { bytesList ->
+                    selectedImageBytesList = bytesList
+                    status = "已读取并缓存 ${bytesList.size} 张参考图，将用于下一次图生图。"
                 }
                 .onFailure {
-                    selectedImage = null
-                    selectedImageBytes = null
+                    selectedImages = emptyList()
+                    selectedImageBytesList = emptyList()
                     withContext(Dispatchers.IO) {
                         clearReferenceImageCache(context)
                     }
@@ -617,6 +641,7 @@ fun MainScreen(
                                 model = task.model,
                                 prompt = task.prompt,
                                 imageBytes = task.imageBytes,
+                                additionalImageBytes = task.additionalImageBytes,
                                 size = task.size,
                                 quality = task.quality,
                                 outputFormat = task.outputFormat,
@@ -629,6 +654,7 @@ fun MainScreen(
                                 model = task.model,
                                 prompt = task.prompt,
                                 imageBytes = task.imageBytes,
+                                additionalImageBytes = task.additionalImageBytes,
                                 size = task.size,
                                 quality = task.quality,
                                 outputFormat = task.outputFormat,
@@ -639,10 +665,23 @@ fun MainScreen(
                                 model = task.model,
                                 prompt = task.prompt,
                                 imageBytes = task.imageBytes,
+                                additionalImageBytes = task.additionalImageBytes,
                                 baseUrl = task.baseUrl,
                                 apiKey = task.apiKey,
                                 size = task.size,
                                 quality = task.quality,
+                                requestId = task.id
+                            ))
+                            ApiMode.ATLAS_CLOUD -> listOf(callEditAtlasCloud(
+                                baseUrl = task.baseUrl,
+                                apiKey = task.apiKey,
+                                model = task.model,
+                                prompt = task.prompt,
+                                imageBytes = task.imageBytes,
+                                additionalImageBytes = task.additionalImageBytes,
+                                size = task.size,
+                                quality = task.quality,
+                                outputFormat = task.outputFormat,
                                 requestId = task.id
                             ))
                         }
@@ -676,6 +715,16 @@ fun MainScreen(
                                 quality = task.quality,
                                 requestId = task.id
                             )
+                            ApiMode.ATLAS_CLOUD -> listOf(callGenerateAtlasCloud(
+                                baseUrl = task.baseUrl,
+                                apiKey = task.apiKey,
+                                model = task.model,
+                                prompt = task.prompt,
+                                size = task.size,
+                                quality = task.quality,
+                                outputFormat = task.outputFormat,
+                                requestId = task.id
+                            ))
                         }
                     }
                 }
@@ -767,8 +816,8 @@ fun MainScreen(
                 runningTaskJobs.remove(task.id)
                 cancelImageRequest(task.id)
                 if (task.imageBytes != null) {
-                    selectedImage = null
-                    selectedImageBytes = null
+                    selectedImages = emptyList()
+                    selectedImageBytesList = emptyList()
                     isReadingReferenceImage = false
                     withContext(Dispatchers.IO) {
                         clearReferenceImageCache(context)
@@ -872,15 +921,15 @@ fun MainScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        "选择参考图后会自动切换为图生图 / 编辑；清除后自动回到文生图",
+                        "选择参考图后会自动切换为图生图 / 编辑；清除后自动回到文生图。可一次选择多张参考图，数量不限，接口/模型是否支持多图由服务端判定。",
                         color = Color(0xFF6B7280)
                     )
-                    if (selectedImage != null) {
+                    if (selectedImages.isNotEmpty()) {
                         StatusCard(
-                            if (selectedImageBytes != null)
-                                "当前参考图：${selectedImage?.lastPathSegment ?: "已选择图片"}"
+                            if (selectedImageBytesList.isNotEmpty())
+                                "当前参考图 ${selectedImageBytesList.size} 张"
                             else
-                                "已记录参考图 URI，但图片缓存读取失败，请重新选择"
+                                "已记录 ${selectedImages.size} 张参考图，但图片缓存读取失败，请重新选择"
                         )
                     } else {
                         Text("当前未选择参考图，将使用文生图模式。", color = Color(0xFF6B7280))
@@ -888,16 +937,16 @@ fun MainScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { picker.launch(arrayOf("image/*")) }) {
-                    Text(if (selectedImage == null) "选择参考图" else "更换参考图")
+                TextButton(onClick = { picker.launch("image/*") }) {
+                    Text(if (selectedImages.isEmpty()) "选择参考图" else "更换参考图")
                 }
             },
             dismissButton = {
                 TextButton(
-                    enabled = selectedImage != null || selectedImageBytes != null,
+                    enabled = selectedImages.isNotEmpty() || selectedImageBytesList.isNotEmpty(),
                     onClick = {
-                        selectedImage = null
-                        selectedImageBytes = null
+                        selectedImages = emptyList()
+                        selectedImageBytesList = emptyList()
                         showReferenceSheet = false
                         activityTaskScope.launch(Dispatchers.IO) {
                             clearReferenceImageCache(context)
@@ -965,7 +1014,11 @@ fun MainScreen(
                     status = "正在自动寻找生图模型..."
                     activityTaskScope.launch {
                         val result = withContext(Dispatchers.IO) {
-                            runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                            if (apiMode == ApiMode.ATLAS_CLOUD) {
+                                runCatching { discoverAtlasImageModels(baseUrl.trim(), apiKey.trim()) }
+                            } else {
+                                runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                            }
                         }
                         isDiscoveringImageModels = false
                         result.onSuccess { models ->
@@ -1429,7 +1482,7 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(20.dp))
-                                    .clickable(enabled = !isReadingReferenceImage) { picker.launch(arrayOf("image/*")) },
+                                    .clickable(enabled = !isReadingReferenceImage) { picker.launch("image/*") },
                                 color = MaterialTheme.colorScheme.surfaceContainerLowest,
                                 shape = RoundedCornerShape(20.dp),
                                 tonalElevation = 1.dp
@@ -1446,7 +1499,7 @@ fun MainScreen(
                                         verticalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
                                         Text(
-                                            text = if (selectedImage != null) "更换图片" else "选择图片",
+                                            text = if (selectedImages.isNotEmpty()) "更换图片" else "选择图片",
                                             fontWeight = FontWeight.Bold,
                                             style = MaterialTheme.typography.titleMedium
                                         )
@@ -1458,9 +1511,9 @@ fun MainScreen(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-                                        } else if (selectedImage != null) {
+                                        } else if (selectedImages.isNotEmpty()) {
                                             Text(
-                                                text = selectedImage?.lastPathSegment ?: "已选择图片",
+                                                text = "已选择 ${selectedImages.size} 张参考图",
                                                 color = Color(0xFF6B7280),
                                                 style = MaterialTheme.typography.labelMedium,
                                                 maxLines = 1,
@@ -1474,6 +1527,62 @@ fun MainScreen(
                                         color = accent,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                }
+                            }
+
+                            // 参考图缩略图条：按选中顺序展示，徽章序号即向 API 发送的数组下标（从 0 开始），
+                            // 与接口实际发送顺序严格一致，部分模型支持按序号引用特定参考图。
+                            if (selectedImageBytesList.isNotEmpty() && !isReadingReferenceImage) {
+                                val referenceThumbnails = remember(selectedImageBytesList) {
+                                    selectedImageBytesList.map { bytes ->
+                                        runCatching { decodePreviewBitmap(bytes, maxSide = 240) }.getOrNull()
+                                    }
+                                }
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "参考图顺序（序号即发送顺序，从 0 开始）",
+                                        color = Color(0xFF6B7280),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        referenceThumbnails.forEachIndexed { index, bitmap ->
+                                            Box(modifier = Modifier.size(72.dp)) {
+                                                if (bitmap != null) {
+                                                    Image(
+                                                        bitmap = bitmap.asImageBitmap(),
+                                                        contentDescription = "参考图 $index",
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .clip(RoundedCornerShape(12.dp))
+                                                            .border(1.dp, Color(0xFFD9E1F5), RoundedCornerShape(12.dp))
+                                                    )
+                                                }
+                                                Surface(
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .padding(3.dp),
+                                                    shape = CircleShape,
+                                                    color = accent
+                                                ) {
+                                                    Text(
+                                                        text = "$index",
+                                                        color = Color.White,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -1502,9 +1611,9 @@ fun MainScreen(
                                     }
 
                                     activityTaskScope.launch {
-                                        val referenceBytes = selectedImageBytes
+                                        val referenceBytesList = selectedImageBytesList
 
-                                        if (selectedImage != null && referenceBytes == null) {
+                                        if (selectedImages.isNotEmpty() && referenceBytesList.isEmpty()) {
                                             status = if (isReadingReferenceImage) {
                                                 "参考图仍在读取中，请稍候。"
                                             } else {
@@ -1512,6 +1621,8 @@ fun MainScreen(
                                             }
                                             return@launch
                                         }
+
+                                        val referenceBytes = referenceBytesList.firstOrNull()
 
                                         prefs.edit {
                                             putString(ConfigKeys.BASE_URL, baseUrl.trim())
@@ -1538,6 +1649,7 @@ fun MainScreen(
                                             apiKey = apiKey.trim(),
                                             apiMode = apiMode,
                                             imageBytes = referenceBytes,
+                                            additionalImageBytes = if (referenceBytesList.size > 1) referenceBytesList.drop(1) else emptyList(),
                                             size = size,
                                             quality = quality,
                                             outputFormat = outputFormat,
@@ -1599,7 +1711,11 @@ fun MainScreen(
                                             status = "正在自动寻找生图模型..."
                                             activityTaskScope.launch {
                                                 val result = withContext(Dispatchers.IO) {
-                                                    runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                                                    if (apiMode == ApiMode.ATLAS_CLOUD) {
+                                                        runCatching { discoverAtlasImageModels(baseUrl.trim(), apiKey.trim()) }
+                                                    } else {
+                                                        runCatching { discoverImageModels(baseUrl.trim(), apiKey.trim()) }
+                                                    }
                                                 }
                                                 isDiscoveringImageModels = false
                                                 result.onSuccess { models ->
@@ -1614,12 +1730,12 @@ fun MainScreen(
                                         Text(if (isDiscoveringImageModels) "正在寻找..." else "自动寻找生图模型")
                                     }
                                     AppEditableDropdownField(
-                                        title = if (selectedImage != null) "图生图模型 ID" else "文生图模型 ID",
-                                        value = if (selectedImage != null) customEditModel else customGenerateModel,
+                                        title = if (selectedImages.isNotEmpty()) "图生图模型 ID" else "文生图模型 ID",
+                                        value = if (selectedImages.isNotEmpty()) customEditModel else customGenerateModel,
                                         options = modelOptions,
                                         placeholder = "输入或选择模型 ID",
                                         onValueChange = { value ->
-                                            if (selectedImage != null) {
+                                            if (selectedImages.isNotEmpty()) {
                                                 customEditModel = value
                                                 editModel = value
                                                 prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }
@@ -1633,7 +1749,7 @@ fun MainScreen(
                                             }
                                         },
                                         onSelected = { value ->
-                                            if (selectedImage != null) {
+                                            if (selectedImages.isNotEmpty()) {
                                                 customEditModel = value
                                                 editModel = value
                                                 prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }

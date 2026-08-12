@@ -20,11 +20,27 @@ private const val MAX_NETWORK_ATTEMPTS = 5
 private const val RETRY_DELAY_MS = 800L
 private const val APP_USER_AGENT = "ImageForge/2.5"
 
+// Atlas Cloud 任务轮询参数
+private const val ATLAS_POLL_INTERVAL_MS = 3_000L
+private const val ATLAS_MAX_POLL_ATTEMPTS = 600 // 约 30 分钟
+private val ATLAS_TERMINAL_STATUSES = setOf("completed", "succeeded", "failed", "timeout")
+private const val ATLAS_MAX_PROMPT_LENGTH = 4000
+
 private val activeImageConnections = ConcurrentHashMap<String, MutableSet<HttpURLConnection>>()
+private val cancelledImageRequestIds = ConcurrentHashMap.newKeySet<String>()
 
 fun cancelImageRequest(requestId: String) {
+    if (requestId.isNotBlank()) {
+        cancelledImageRequestIds.add(requestId)
+    }
     activeImageConnections.remove(requestId)?.forEach { conn ->
         runCatching { conn.disconnect() }
+    }
+}
+
+private fun ensureImageRequestNotCancelled(requestId: String?) {
+    if (!requestId.isNullOrBlank() && cancelledImageRequestIds.contains(requestId)) {
+        throw IOException("任务已取消")
     }
 }
 
@@ -211,6 +227,7 @@ fun callEdit(
     model: String,
     prompt: String,
     imageBytes: ByteArray?,
+    additionalImageBytes: List<ByteArray> = emptyList(),
     size: String,
     quality: String,
     outputFormat: String,
@@ -221,6 +238,10 @@ fun callEdit(
     require(model.isNotBlank()) { "请填写模型 ID" }
     require(prompt.isNotBlank()) { "请填写编辑指令" }
     val sourceImageBytes = requireNotNull(imageBytes) { "无法读取参考图，请重新选择图片后再试" }
+    val allImages = listOf(sourceImageBytes) + additionalImageBytes
+    // 单张时用 image 字段；多张时按 OpenAI 多图编辑约定全部用 image[] 字段，
+    // 是否真正支持多图由服务端判定，不支持时让 API 自然报错。
+    val imageFieldName = if (allImages.size > 1) "image[]" else "image"
 
     return withNetworkRetries("图生图请求") {
         val boundary = "----AndroidBoundary${UUID.randomUUID()}"
@@ -250,11 +271,14 @@ fun callEdit(
                 field("output_format", outputFormat)
                 if (background.isNotBlank()) field("background", background)
 
-                writeText("--$boundary\r\n")
-                writeText("Content-Disposition: form-data; name=\"image\"; filename=\"image.png\"\r\n")
-                writeText("Content-Type: image/png\r\n\r\n")
-                out.write(sourceImageBytes)
-                writeText("\r\n--$boundary--\r\n")
+                allImages.forEachIndexed { index, image ->
+                    writeText("--$boundary\r\n")
+                    writeText("Content-Disposition: form-data; name=\"$imageFieldName\"; filename=\"image_${index + 1}.png\"\r\n")
+                    writeText("Content-Type: image/png\r\n\r\n")
+                    out.write(image)
+                    writeText("\r\n")
+                }
+                writeText("--$boundary--\r\n")
             }
             parseImageResponse(conn)
         } finally {
@@ -269,6 +293,7 @@ fun callEditGenerationsCompat(
     model: String,
     prompt: String,
     imageBytes: ByteArray?,
+    additionalImageBytes: List<ByteArray> = emptyList(),
     size: String,
     quality: String,
     requestId: String? = null
@@ -278,11 +303,12 @@ fun callEditGenerationsCompat(
     require(prompt.isNotBlank()) { "请填写编辑指令" }
     val sourceImageBytes = requireNotNull(imageBytes) { "无法读取参考图，请重新选择图片后再试" }
 
-    val inputImageDataUrl = buildCompactImageDataUrl(sourceImageBytes)
+    val imageDataUrls = (listOf(sourceImageBytes) + additionalImageBytes).map { buildCompactImageDataUrl(it) }
+    val referenceCount = imageDataUrls.size
     val compatPrompt = """
         $prompt
 
-        Reference image is provided in the request image fields. Use it as the visual reference for this edit.
+        Reference image${if (referenceCount > 1) "s are" else " is"} provided in the request image fields. Use ${if (referenceCount > 1) "them" else "it"} as the visual reference for this edit.
     """.trimIndent()
 
     val body = JSONObject()
@@ -291,8 +317,11 @@ fun callEditGenerationsCompat(
         .put("n", 1)
         .put("size", size)
         .put("quality", quality)
-        .put("image", inputImageDataUrl)
-        .put("reference_image", inputImageDataUrl)
+        .put("image", imageDataUrls.first())
+        .put("reference_image", imageDataUrls.first())
+    if (referenceCount > 1) {
+        body.put("images", JSONArray(imageDataUrls))
+    }
 
     return withNetworkRetries("兼容模式图生图请求") {
         val conn = openPostConnection(endpoint(baseUrl, "/images/generations"), apiKey, requestId = requestId)
@@ -305,12 +334,215 @@ fun callEditGenerationsCompat(
     }
 }
 
+/** Atlas Cloud 专用：Base URL 统一为 /api/v1，与 OpenAI 风格 /v1 的自动补全逻辑无关。 */
+private fun atlasEndpoint(baseUrl: String, path: String): String {
+    val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+    require(normalizedBaseUrl.isNotBlank()) { "请填写 Base URL" }
+    require(
+        normalizedBaseUrl.startsWith("https://") || normalizedBaseUrl.startsWith("http://")
+    ) { "Base URL 必须以 http:// 或 https:// 开头" }
+
+    val apiBase = if (Regex("""/api/v\d+/?$""").containsMatchIn(normalizedBaseUrl)) {
+        normalizedBaseUrl
+    } else {
+        "$normalizedBaseUrl/api/v1"
+    }
+    val normalizedPath = if (path.startsWith("/")) path else "/$path"
+    return "$apiBase$normalizedPath"
+}
+
+private fun requireAtlasPrompt(prompt: String) {
+    require(prompt.isNotBlank()) { "请填写 Prompt" }
+    require(prompt.length <= ATLAS_MAX_PROMPT_LENGTH) {
+        "提示词过长：${prompt.length} 字符，Atlas Cloud 上限为 $ATLAS_MAX_PROMPT_LENGTH 字符"
+    }
+}
+
+/**
+ * Atlas Cloud 统一图像协议：POST /api/v1/model/generateImage 异步提交，
+ * 轮询 GET /api/v1/model/prediction/{id} 直到终态，再从 outputs 取 CDN URL 下载。
+ * imageBytes 为 null 时纯文生图，否则附带参考图，变体是否匹配由服务端判定。
+ */
+private fun callAtlasGenerate(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    imageBytes: ByteArray?,
+    additionalImageBytes: List<ByteArray> = emptyList(),
+    size: String,
+    quality: String,
+    outputFormat: String,
+    requestId: String? = null
+): ByteArray {
+    require(apiKey.isNotBlank()) { "请填写 API Key" }
+    require(model.isNotBlank()) { "请填写模型 ID" }
+    requireAtlasPrompt(prompt)
+
+    val resolvedModel = model.trim()
+
+    val body = JSONObject()
+        .put("model", resolvedModel)
+        .put("prompt", prompt)
+        // 尺寸选项本身就是协议支持的 aspect_ratio 值（含 auto），原样透传
+        .put("aspect_ratio", size.trim())
+        .put("output_format", outputFormat)
+        // URL 模式：成果以 CDN URL 持久化，下载中断可重试同一 URL，不重新生成（不重复计费）
+        .put("enable_base64_output", false)
+
+    if (imageBytes != null) {
+        val allImages = listOf(imageBytes) + additionalImageBytes
+        val imageDataUrls = allImages.map { buildCompactImageDataUrl(it) }
+        // 字段选择只看参考图数量，不解析模型 ID 内容：单张用 image 字段，
+        // 多张用 images 数组；模型是否接受由服务端判定，不支持时让 API 自然报错。
+        if (allImages.size == 1) {
+            body.put("image", imageDataUrls.first())
+        } else {
+            body.put("images", JSONArray(imageDataUrls))
+        }
+    }
+
+    return withNetworkRetries("Atlas Cloud 生图请求") {
+        // 提交
+        val submitConn = openPostConnection(atlasEndpoint(baseUrl, "/model/generateImage"), apiKey, requestId = requestId)
+        val taskData: JSONObject = try {
+            writeJsonBody(submitConn, body)
+            val code = readResponseCode(submitConn, "Atlas Cloud 提交接口")
+            val text = readResponseTextSafely(submitConn, code)
+            if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+            parseAtlasPayload(text)
+        } finally {
+            closeConnection(requestId, submitConn)
+        }
+
+        val taskId = taskData.safeOptString("id")
+        require(taskId.isNotBlank()) { "Atlas Cloud 响应中没有任务 ID" }
+
+        var status = taskData.safeOptString("status")
+        var latestData = taskData
+        if (status.isBlank()) status = "pending"
+
+        // 轮询直到终态
+        var attempts = 0
+        while (status !in ATLAS_TERMINAL_STATUSES) {
+            ensureImageRequestNotCancelled(requestId)
+            if (++attempts > ATLAS_MAX_POLL_ATTEMPTS) {
+                error("Atlas Cloud 任务轮询超时（约 ${ATLAS_MAX_POLL_ATTEMPTS * ATLAS_POLL_INTERVAL_MS / 60_000} 分钟），任务 ID：$taskId")
+            }
+            runCatching { Thread.sleep(ATLAS_POLL_INTERVAL_MS) }
+            ensureImageRequestNotCancelled(requestId)
+
+            val pollConn = openGetConnection(atlasEndpoint(baseUrl, "/model/prediction/$taskId"), apiKey, requestId = requestId)
+            try {
+                val code = readResponseCode(pollConn, "Atlas Cloud 任务状态接口")
+                val text = readResponseTextSafely(pollConn, code)
+                if (code !in 200..299) error("HTTP $code（任务 ID：$taskId）: ${text.truncateForError()}")
+                val data = parseAtlasPayload(text)
+                latestData = data
+                val nextStatus = data.safeOptString("status")
+                if (nextStatus.isNotBlank()) status = nextStatus
+            } catch (e: IOException) {
+                // 网络抖动：轮询请求短小，重试即可；HTTP 4xx 属业务性错误
+                if (!isRetryableNetworkFailure(e)) throw e
+            } finally {
+                closeConnection(requestId, pollConn)
+            }
+        }
+
+        if (status == "failed" || status == "timeout") {
+            error("Atlas Cloud 生成失败（status=$status）：${latestData.safeOptString("error").ifBlank { "服务端未返回错误详情" }}（任务 ID：$taskId）")
+        }
+
+        val outputs = latestData.optJSONArray("outputs")
+        if (outputs == null || outputs.length() == 0) {
+            error("Atlas Cloud 任务完成但没有输出内容（任务 ID：$taskId）")
+        }
+        val output = outputs.opt(0)?.toString().orEmpty().trim()
+        require(output.isNotBlank()) { "Atlas Cloud 输出内容为空（任务 ID：$taskId）" }
+
+        if (output.startsWith("http://") || output.startsWith("https://")) {
+            download(output)
+        } else {
+            error("Atlas Cloud 输出不是 URL：${output.take(300)}")
+        }
+    }
+}
+
+/** 解析 Atlas Cloud 响应：检查外层 code，返回 data 对象。 */
+private fun parseAtlasPayload(text: String): JSONObject {
+    val json = try { JSONObject(text) } catch (e: Exception) {
+        error("Atlas Cloud 响应不是有效 JSON：${text.truncateForError()}")
+    }
+    if (json.has("code") && !json.isNull("code")) {
+        val code = when (val value = json.opt("code")) {
+            is Number -> value.toInt()
+            is String -> value.toIntOrNull() ?: -1
+            else -> -1
+        }
+        if (code != 0 && code != 200) {
+            error("Atlas Cloud 返回失败（code=$code）：${json.safeOptString("message").ifBlank { "无错误信息" }}")
+        }
+    }
+    return json.optJSONObject("data") ?: error("Atlas Cloud 响应中没有 data 字段：${text.truncateForError()}")
+}
+
+fun callGenerateAtlasCloud(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    size: String,
+    quality: String,
+    outputFormat: String,
+    requestId: String? = null
+): ByteArray = callAtlasGenerate(
+    baseUrl = baseUrl,
+    apiKey = apiKey,
+    model = model,
+    prompt = prompt,
+    imageBytes = null,
+    size = size,
+    quality = quality,
+    outputFormat = outputFormat,
+    requestId = requestId
+)
+
+fun callEditAtlasCloud(
+    baseUrl: String,
+    apiKey: String,
+    model: String,
+    prompt: String,
+    imageBytes: ByteArray?,
+    additionalImageBytes: List<ByteArray> = emptyList(),
+    size: String,
+    quality: String,
+    outputFormat: String,
+    requestId: String? = null
+): ByteArray {
+    val referenceBytes = requireNotNull(imageBytes) { "无法读取参考图，请重新选择图片后再试" }
+    // 模型 ID 不做任何自动改写，按用户填写原样提交（图生图请选择带参考图能力的模型，
+    // 如 reve-ai/reve-2.1/edit 或 remix；填错时由服务端自然报错）。
+    return callAtlasGenerate(
+        baseUrl = baseUrl,
+        apiKey = apiKey,
+        model = model,
+        prompt = prompt,
+        imageBytes = referenceBytes,
+        additionalImageBytes = additionalImageBytes,
+        size = size,
+        quality = quality,
+        outputFormat = outputFormat,
+        requestId = requestId
+    )
+}
+
 fun callEditResponses(
     baseUrl: String,
     apiKey: String,
     model: String,
     prompt: String,
     imageBytes: ByteArray?,
+    additionalImageBytes: List<ByteArray> = emptyList(),
     size: String,
     quality: String,
     outputFormat: String,
@@ -322,14 +554,18 @@ fun callEditResponses(
     require(prompt.isNotBlank()) { "请填写编辑指令" }
     val sourceImageBytes = requireNotNull(imageBytes) { "无法读取参考图，请重新选择图片后再试" }
 
-    val inputImageDataUrl = "data:image/png;base64," + Base64.encodeToString(sourceImageBytes, Base64.NO_WRAP)
+    // 多张参考图全部作为 input_image 发送；模型是否支持多图由服务端判定，
+    // 不支持时让 API 自然报错。
     val inputContent = JSONArray().apply {
         put(
             JSONObject()
                 .put("type", "input_text")
                 .put("text", "Use the following text as the complete prompt. Do not rewrite it:\n$prompt")
         )
-        put(JSONObject().put("type", "input_image").put("image_url", inputImageDataUrl))
+        (listOf(sourceImageBytes) + additionalImageBytes).forEach { image ->
+            val dataUrl = "data:image/png;base64," + Base64.encodeToString(image, Base64.NO_WRAP)
+            put(JSONObject().put("type", "input_image").put("image_url", dataUrl))
+        }
     }
 
     val tool = JSONObject()
@@ -592,6 +828,49 @@ fun discoverImageModels(baseUrl: String, apiKey: String): List<String> {
     }
 }
 
+/**
+ * Atlas Cloud 模型发现：请求 GET {apiBase}/api/v1/models，
+ * 筛选 type 为 "Image" 的模型返回其 ID 列表。
+ * 该接口无需认证（官方 MCP server 以 requireAuth: false 调用），
+ * 但仍附带 Authorization 头以兼容未来可能收紧的情况。
+ */
+fun discoverAtlasImageModels(baseUrl: String, apiKey: String = ""): List<String> {
+    return withNetworkRetries("Atlas Cloud 模型列表请求") {
+        val conn = openGetConnection(atlasEndpoint(baseUrl, "/models"), apiKey)
+        try {
+            val code = readResponseCode(conn, "Atlas Cloud 模型列表接口")
+            val text = readResponseTextSafely(conn, code)
+            if (code !in 200..299) error("HTTP $code: ${text.truncateForError()}")
+
+            val json = JSONObject(text)
+            // Atlas 响应外层有 code 字段，检查业务状态
+            if (json.has("code") && !json.isNull("code")) {
+                val bizCode = when (val value = json.opt("code")) {
+                    is Number -> value.toInt()
+                    is String -> value.toIntOrNull() ?: -1
+                    else -> -1
+                }
+                if (bizCode != 0 && bizCode != 200) {
+                    error("Atlas Cloud 返回失败（code=$bizCode）：${json.safeOptString("message").ifBlank { "无错误信息" }}")
+                }
+            }
+            val data = json.optJSONArray("data") ?: JSONArray()
+            val imageModels = mutableListOf<String>()
+            for (index in 0 until data.length()) {
+                val item = data.optJSONObject(index) ?: continue
+                val type = item.optString("type", "").trim()
+                val modelId = item.optString("model", "").trim()
+                if (modelId.isNotBlank() && type.equals("Image", ignoreCase = true)) {
+                    imageModels.add(modelId)
+                }
+            }
+            imageModels.sorted()
+        } finally {
+            conn.disconnect()
+        }
+    }
+}
+
 private data class ModelCandidate(val id: String, val score: Int)
 
 private fun imageGenerationModelScore(item: JSONObject, id: String): Int {
@@ -845,19 +1124,19 @@ private fun openPostConnection(
     })
 }
 
-private fun openGetConnection(url: String, apiKey: String): HttpURLConnection {
-    val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+private fun openGetConnection(url: String, apiKey: String, requestId: String? = null): HttpURLConnection {
+    val parsedConn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
         throw IOException("URL解析失败，请检查 Base URL 格式", e)
     }
-    conn.setRequestProperty("Connection", "keep-alive")
-    return conn.apply {
+    parsedConn.setRequestProperty("Connection", "keep-alive")
+    return trackConnection(requestId, parsedConn.apply {
         requestMethod = "GET"
         connectTimeout = CONNECT_TIMEOUT_MS
         readTimeout = READ_TIMEOUT_MS
         setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
         setRequestProperty("Accept", "application/json")
         setRequestProperty("User-Agent", APP_USER_AGENT)
-    }
+    })
 }
 
 private fun writeJsonBody(conn: HttpURLConnection, body: JSONObject) {

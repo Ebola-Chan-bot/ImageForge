@@ -31,6 +31,9 @@ object ConfigKeys {
     const val BACKGROUND = "background"
     const val CUSTOM_SAVE_DIRECTORY_URI = "customSaveDirectoryUri"
 
+    // “自动寻找生图模型”的结果持久化
+    const val DISCOVERED_IMAGE_MODELS = "discoveredImageModels"
+
     // 历史记录
     const val HISTORY = "history"
 
@@ -57,7 +60,8 @@ enum class ScreenRoute {
 enum class ApiMode(val value: String, val label: String) {
     IMAGES("images", "Images API"),
     RESPONSES("responses", "Responses API"),
-    GENERATIONS_EDIT("generations_edit", "Generations 图生图兼容");
+    GENERATIONS_EDIT("generations_edit", "Generations 图生图兼容"),
+    ATLAS_CLOUD("atlas_cloud", "Atlas Cloud");
 
     companion object {
         fun from(value: String?): ApiMode =
@@ -85,6 +89,7 @@ data class ImageTask(
     val apiKey: String,
     val apiMode: ApiMode,
     val imageBytes: ByteArray?,
+    val additionalImageBytes: List<ByteArray> = emptyList(),
     val size: String,
     val quality: String,
     val outputFormat: String,
@@ -126,6 +131,32 @@ val editSizes = listOf(
     SizeOption("2048x1152", "16:9 横图", "横屏编辑比例"),
     SizeOption("1152x2048", "9:16 竖图", "竖屏编辑比例"),
     SizeOption("2048x2048", "1:1 高清方图", "高细节编辑")
+)
+
+/**
+ * Atlas Cloud 模式的宽高比选项：直接是协议支持的 aspect_ratio 值（不含像素尺寸），
+ * 完整覆盖 Reve 2.1 等模型的可选比例；分辨率由服务端决定（Reve 原生 4K），
+ * 请求体只发送 aspect_ratio，因此这里只让用户选比例。
+ */
+val atlasSizes = listOf(
+    SizeOption("auto", "自动", "由模型自行决定比例"),
+    SizeOption("1:1", "1:1 方图", "正方形，通用首选"),
+    SizeOption("4:1", "4:1 超宽横幅", "极宽横幅，适合 Banner"),
+    SizeOption("3:1", "3:1 宽横幅", "宽横幅构图"),
+    SizeOption("21:9", "21:9 电影宽幅", "电影级超宽画幅"),
+    SizeOption("2:1", "2:1 横图", "横向延展"),
+    SizeOption("17:9", "17:9 横图", "DCI 电影比例"),
+    SizeOption("16:9", "16:9 横图", "桌面壁纸、视频封面"),
+    SizeOption("3:2", "3:2 横图", "相机横向构图"),
+    SizeOption("4:3", "4:3 横图", "经典横向比例"),
+    SizeOption("5:4", "5:4 近方横图", "大画幅相机比例"),
+    SizeOption("4:5", "4:5 近方竖图", "社交平台竖图"),
+    SizeOption("3:4", "3:4 竖图", "经典竖向比例"),
+    SizeOption("2:3", "2:3 竖图", "相机竖向构图"),
+    SizeOption("9:16", "9:16 竖图", "手机壁纸、竖屏海报"),
+    SizeOption("1:2", "1:2 竖长图", "窄竖长构图"),
+    SizeOption("1:3", "1:3 超长竖图", "极窄竖长构图"),
+    SizeOption("1:4", "1:4 超超长竖图", "最窄竖长构图")
 )
 
 val qualityOptions = listOf("auto", "low", "medium", "high")

@@ -177,14 +177,12 @@ fun clearReferenceImageCache(context: Context) {
     cleanupReferenceImageCache(context, maxAgeMillis = 0L)
 }
 
-fun cacheReferenceImageBytes(context: Context, uri: Uri): ByteArray {
+/**
+ * 一次性缓存多张参考图：先清理旧缓存，再按序写入并以相同顺序回读字节。
+ * 参考图数量不做限制，接口/模型是否支持多图由服务端判定，不支持时让 API 自然报错。
+ */
+fun cacheMultipleReferenceImageBytes(context: Context, uris: List<Uri>): List<ByteArray> {
     cleanupReferenceImageCache(context)
-
-    val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
-        input.readBytes()
-    } ?: throw IOException("无法读取参考图文件，请重新选择图片")
-
-    require(bytes.isNotEmpty()) { "参考图文件为空，请重新选择图片" }
 
     val cacheDir = File(context.cacheDir, "reference_images").apply {
         if (!exists()) mkdirs()
@@ -194,18 +192,26 @@ fun cacheReferenceImageBytes(context: Context, uri: Uri): ByteArray {
         if (oldFile.isFile) runCatching { oldFile.delete() }
     }
 
-    val cacheFile = File(cacheDir, "reference_${System.currentTimeMillis()}.img")
-    try {
-        cacheFile.outputStream().use { output ->
-            output.write(bytes)
-            output.flush()
-        }
-    } catch (e: Exception) {
-        runCatching { cacheFile.delete() }
-        throw IOException("参考图缓存写入失败，请重新选择图片", e)
-    }
+    val now = System.currentTimeMillis()
+    return uris.mapIndexed { index, uri ->
+        val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+            input.readBytes()
+        } ?: throw IOException("无法读取参考图文件，请重新选择图片")
 
-    return cacheFile.inputStream().use { it.readBytes() }
+        require(bytes.isNotEmpty()) { "参考图文件为空，请重新选择图片" }
+
+        val cacheFile = File(cacheDir, "reference_${now}_$index.img")
+        try {
+            cacheFile.outputStream().use { output ->
+                output.write(bytes)
+                output.flush()
+            }
+        } catch (e: Exception) {
+            runCatching { cacheFile.delete() }
+            throw IOException("参考图缓存写入失败，请重新选择图片", e)
+        }
+        cacheFile.inputStream().use { it.readBytes() }
+    }
 }
 
 fun saveExistingImageToGallery(
