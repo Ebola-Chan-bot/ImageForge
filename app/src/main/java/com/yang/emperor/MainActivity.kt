@@ -325,7 +325,6 @@ fun MainScreen(
     var outputFormat by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.OUTPUT_FORMAT, "png") ?: "png") }
     var background by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BACKGROUND, "auto") ?: "auto") }
     var editMode by rememberSaveable { mutableStateOf(false) }
-    var selectedImages by remember { mutableStateOf(emptyList<Uri>()) }
     var selectedImageBytesList by remember { mutableStateOf(emptyList<ByteArray>()) }
     var isReadingReferenceImage by remember { mutableStateOf(false) }
     var showReferenceSheet by remember { mutableStateOf(false) }
@@ -433,8 +432,15 @@ fun MainScreen(
         (discoveredImageModels + imageModels).distinct()
     }
 
-    LaunchedEffect(selectedImages) {
-        editMode = selectedImages.isNotEmpty()
+    // 启动时恢复持久化的参考图：文件保存在应用私有目录，生成图像或重启应用都不会丢失
+    LaunchedEffect(Unit) {
+        isReadingReferenceImage = true
+        selectedImageBytesList = withContext(Dispatchers.IO) { loadPersistedReferenceImages(context) }
+        isReadingReferenceImage = false
+    }
+
+    LaunchedEffect(selectedImageBytesList) {
+        editMode = selectedImageBytesList.isNotEmpty()
     }
 
     LaunchedEffect(editMode, apiMode) {
@@ -483,49 +489,33 @@ fun MainScreen(
 
     // 用 GetMultipleContents（ACTION_GET_CONTENT）而非 OpenMultipleDocuments：
     // 荣耀/华为等国产系统的“文件”选择器会忽略多选标记只允许单选，
-    // 而 GET_CONTENT 通常唤起图库，支持勾选多张；参考图字节会立即缓存，无需持久化权限。
+    // 而 GET_CONTENT 通常唤起图库，支持勾选多张。参考图读取后保存进应用私有目录，
+    // 生成图像或重启应用都不会丢失。
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (uris.isEmpty()) {
             // 用户取消选择：保留原有参考图不变
             return@rememberLauncherForActivityResult
         }
 
-        selectedImages = uris
-        selectedImageBytesList = emptyList()
-
-        uris.forEach { uri ->
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        }
-
         showReferenceSheet = false
         isReadingReferenceImage = true
-        status = "正在读取并缓存 ${uris.size} 张参考图..."
+        status = "正在读取并保存 ${uris.size} 张参考图..."
 
         activityTaskScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    cacheMultipleReferenceImageBytes(context, uris)
+                    persistReferenceImages(context, uris)
                 }
-            }
-
-            if (selectedImages != uris) {
-                return@launch
             }
 
             result
                 .onSuccess { bytesList ->
                     selectedImageBytesList = bytesList
-                    status = "已读取并缓存 ${bytesList.size} 张参考图，将用于下一次图生图。"
+                    status = "已保存 ${bytesList.size} 张参考图，将用于下一次图生图。"
                 }
                 .onFailure {
-                    selectedImages = emptyList()
                     selectedImageBytesList = emptyList()
-                    withContext(Dispatchers.IO) {
-                        clearReferenceImageCache(context)
-                    }
-                    status = "参考图读取失败：${friendlyShortErrorMessage(it)}，请重新选择。"
+                    status = "参考图保存失败：${friendlyShortErrorMessage(it)}，请重新选择。"
                 }
 
             isReadingReferenceImage = false
@@ -815,14 +805,7 @@ fun MainScreen(
                 runningTasks.remove(task.id)
                 runningTaskJobs.remove(task.id)
                 cancelImageRequest(task.id)
-                if (task.imageBytes != null) {
-                    selectedImages = emptyList()
-                    selectedImageBytesList = emptyList()
-                    isReadingReferenceImage = false
-                    withContext(Dispatchers.IO) {
-                        clearReferenceImageCache(context)
-                    }
-                }
+                // 参考图已持久化保存：生成完成后不清除，下次图生图可继续使用
             }
             delay(100)
         }
@@ -924,13 +907,8 @@ fun MainScreen(
                         "选择参考图后会自动切换为图生图 / 编辑；清除后自动回到文生图。可一次选择多张参考图，数量不限，接口/模型是否支持多图由服务端判定。",
                         color = Color(0xFF6B7280)
                     )
-                    if (selectedImages.isNotEmpty()) {
-                        StatusCard(
-                            if (selectedImageBytesList.isNotEmpty())
-                                "当前参考图 ${selectedImageBytesList.size} 张"
-                            else
-                                "已记录 ${selectedImages.size} 张参考图，但图片缓存读取失败，请重新选择"
-                        )
+                    if (selectedImageBytesList.isNotEmpty()) {
+                        StatusCard("当前参考图 ${selectedImageBytesList.size} 张（已保存，重启不丢失）")
                     } else {
                         Text("当前未选择参考图，将使用文生图模式。", color = Color(0xFF6B7280))
                     }
@@ -938,18 +916,17 @@ fun MainScreen(
             },
             confirmButton = {
                 TextButton(onClick = { picker.launch("image/*") }) {
-                    Text(if (selectedImages.isEmpty()) "选择参考图" else "更换参考图")
+                    Text(if (selectedImageBytesList.isEmpty()) "选择参考图" else "更换参考图")
                 }
             },
             dismissButton = {
                 TextButton(
-                    enabled = selectedImages.isNotEmpty() || selectedImageBytesList.isNotEmpty(),
+                    enabled = selectedImageBytesList.isNotEmpty(),
                     onClick = {
-                        selectedImages = emptyList()
                         selectedImageBytesList = emptyList()
                         showReferenceSheet = false
                         activityTaskScope.launch(Dispatchers.IO) {
-                            clearReferenceImageCache(context)
+                            clearPersistedReferenceImages(context)
                         }
                         status = "已清除参考图，将自动使用文生图模式。"
                     }
@@ -1499,7 +1476,7 @@ fun MainScreen(
                                         verticalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
                                         Text(
-                                            text = if (selectedImages.isNotEmpty()) "更换图片" else "选择图片",
+                                            text = if (selectedImageBytesList.isNotEmpty()) "更换图片" else "选择图片",
                                             fontWeight = FontWeight.Bold,
                                             style = MaterialTheme.typography.titleMedium
                                         )
@@ -1511,9 +1488,9 @@ fun MainScreen(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
-                                        } else if (selectedImages.isNotEmpty()) {
+                                        } else if (selectedImageBytesList.isNotEmpty()) {
                                             Text(
-                                                text = "已选择 ${selectedImages.size} 张参考图",
+                                                text = "已选择 ${selectedImageBytesList.size} 张参考图",
                                                 color = Color(0xFF6B7280),
                                                 style = MaterialTheme.typography.labelMedium,
                                                 maxLines = 1,
@@ -1619,12 +1596,9 @@ fun MainScreen(
                                     activityTaskScope.launch {
                                         val referenceBytesList = selectedImageBytesList
 
-                                        if (selectedImages.isNotEmpty() && referenceBytesList.isEmpty()) {
-                                            status = if (isReadingReferenceImage) {
-                                                "参考图仍在读取中，请稍候。"
-                                            } else {
-                                                "参考图缓存不可用，请重新选择图片。"
-                                            }
+                                        // 持久化恢复期间字节列表尚未就绪时，提示等待；否则列表为空即视为文生图
+                                        if (referenceBytesList.isEmpty() && isReadingReferenceImage) {
+                                            status = "参考图仍在读取中，请稍候。"
                                             return@launch
                                         }
 
@@ -1736,12 +1710,12 @@ fun MainScreen(
                                         Text(if (isDiscoveringImageModels) "正在寻找..." else "自动寻找生图模型")
                                     }
                                     AppEditableDropdownField(
-                                        title = if (selectedImages.isNotEmpty()) "图生图模型 ID" else "文生图模型 ID",
-                                        value = if (selectedImages.isNotEmpty()) customEditModel else customGenerateModel,
+                                        title = if (selectedImageBytesList.isNotEmpty()) "图生图模型 ID" else "文生图模型 ID",
+                                        value = if (selectedImageBytesList.isNotEmpty()) customEditModel else customGenerateModel,
                                         options = modelOptions,
                                         placeholder = "输入或选择模型 ID",
                                         onValueChange = { value ->
-                                            if (selectedImages.isNotEmpty()) {
+                                            if (selectedImageBytesList.isNotEmpty()) {
                                                 customEditModel = value
                                                 editModel = value
                                                 prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }
@@ -1755,7 +1729,7 @@ fun MainScreen(
                                             }
                                         },
                                         onSelected = { value ->
-                                            if (selectedImages.isNotEmpty()) {
+                                            if (selectedImageBytesList.isNotEmpty()) {
                                                 customEditModel = value
                                                 editModel = value
                                                 prefs.edit { putString(ConfigKeys.EDIT_MODEL, value.trim()) }

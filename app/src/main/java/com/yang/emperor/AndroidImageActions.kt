@@ -163,36 +163,48 @@ fun openImageFromHistory(context: Context, imageUri: String): Boolean {
     }
 }
 
-fun cleanupReferenceImageCache(context: Context, maxAgeMillis: Long = 6 * 60 * 60 * 1000L) {
-    val dir = File(context.cacheDir, "reference_images")
-    val now = System.currentTimeMillis()
-    dir.listFiles()?.forEach { file ->
-        if (file.isFile && (maxAgeMillis <= 0L || now - file.lastModified() > maxAgeMillis)) {
-            runCatching { file.delete() }
+private fun referenceImagesDir(context: Context): File =
+    File(context.filesDir, "reference_images")
+
+/**
+ * 读取持久化的全部参考图字节，按 reference_<序号>.img 的文件名序号排序，
+ * 保证与用户选择/发送顺序一致。目录不存在或读取失败时返回空列表。
+ */
+fun loadPersistedReferenceImages(context: Context): List<ByteArray> {
+    val files = referenceImagesDir(context).listFiles()
+        ?.filter { it.isFile && it.name.startsWith("reference_") && it.name.endsWith(".img") }
+        ?.sortedBy { file ->
+            file.name.removePrefix("reference_").removeSuffix(".img").toIntOrNull() ?: Int.MAX_VALUE
         }
+        ?: return emptyList()
+
+    return files.mapNotNull { file ->
+        runCatching { file.inputStream().use { it.readBytes() } }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
     }
 }
 
-fun clearReferenceImageCache(context: Context) {
-    cleanupReferenceImageCache(context, maxAgeMillis = 0L)
+/** 清除全部持久化参考图（用户主动清除或换选图片时调用）。 */
+fun clearPersistedReferenceImages(context: Context) {
+    referenceImagesDir(context).listFiles()?.forEach { file ->
+        runCatching { file.delete() }
+    }
 }
 
 /**
- * 一次性缓存多张参考图：先清理旧缓存，再按序写入并以相同顺序回读字节。
- * 参考图数量不做限制，接口/模型是否支持多图由服务端判定，不支持时让 API 自然报错。
+ * 持久化保存多张参考图：先清除旧文件，再按选择顺序写入 filesDir（非缓存，
+ * 重启应用与生成图片后不丢失）。参考图数量不做限制，
+ * 接口/模型是否支持多图由服务端判定，不支持时让 API 自然报错。
  */
-fun cacheMultipleReferenceImageBytes(context: Context, uris: List<Uri>): List<ByteArray> {
-    cleanupReferenceImageCache(context)
-
-    val cacheDir = File(context.cacheDir, "reference_images").apply {
+fun persistReferenceImages(context: Context, uris: List<Uri>): List<ByteArray> {
+    val dir = referenceImagesDir(context).apply {
         if (!exists()) mkdirs()
     }
-
-    cacheDir.listFiles()?.forEach { oldFile ->
+    dir.listFiles()?.forEach { oldFile ->
         if (oldFile.isFile) runCatching { oldFile.delete() }
     }
 
-    val now = System.currentTimeMillis()
     return uris.mapIndexed { index, uri ->
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             input.readBytes()
@@ -200,17 +212,16 @@ fun cacheMultipleReferenceImageBytes(context: Context, uris: List<Uri>): List<By
 
         require(bytes.isNotEmpty()) { "参考图文件为空，请重新选择图片" }
 
-        val cacheFile = File(cacheDir, "reference_${now}_$index.img")
+        val file = File(dir, "reference_$index.img")
         try {
-            cacheFile.outputStream().use { output ->
+            file.outputStream().use { output ->
                 output.write(bytes)
                 output.flush()
             }
         } catch (e: Exception) {
-            runCatching { cacheFile.delete() }
-            throw IOException("参考图缓存写入失败，请重新选择图片", e)
+            runCatching { file.delete() }
+            throw IOException("参考图保存失败，请重新选择图片", e)
         }
-        // bytes 已完整读入内存，直接返回；无需再从缓存文件回读一遍（双倍 I/O 不带来任何正确性收益）
         bytes
     }
 }
