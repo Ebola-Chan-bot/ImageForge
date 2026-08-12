@@ -29,9 +29,25 @@ private const val ATLAS_MAX_PROMPT_LENGTH = 4000
 private val activeImageConnections = ConcurrentHashMap<String, MutableSet<HttpURLConnection>>()
 private val cancelledImageRequestIds = ConcurrentHashMap.newKeySet<String>()
 
+// 已取消的 requestId 集合防无限增长的安全上限：
+// 任务结束后的清理流程也会调用 cancelImageRequest、把已完结的 id 重新 add 进来，
+// 这些 id 不会再被任何消费者读到（requestId 均为一次性 UUID、不会复用），
+// 因此超过上限后按任意顺序丢弃最早的若干条目也不会误伤在途的取消信号。
+private const val MAX_CANCELLED_REQUEST_IDS = 1024
+
 fun cancelImageRequest(requestId: String) {
     if (requestId.isNotBlank()) {
         cancelledImageRequestIds.add(requestId)
+        val excess = cancelledImageRequestIds.size - MAX_CANCELLED_REQUEST_IDS
+        if (excess > 0) {
+            val iterator = cancelledImageRequestIds.iterator()
+            repeat(excess) {
+                if (iterator.hasNext()) {
+                    iterator.next()
+                    iterator.remove()
+                }
+            }
+        }
     }
     activeImageConnections.remove(requestId)?.forEach { conn ->
         runCatching { conn.disconnect() }
@@ -461,7 +477,7 @@ private fun callAtlasGenerate(
         require(output.isNotBlank()) { "Atlas Cloud 输出内容为空（任务 ID：$taskId）" }
 
         if (output.startsWith("http://") || output.startsWith("https://")) {
-            download(output)
+            download(output, requestId)
         } else {
             error("Atlas Cloud 输出不是 URL：${output.take(300)}")
         }
@@ -922,16 +938,20 @@ private fun imageGenerationModelScore(item: JSONObject, id: String): Int {
     return score
 }
 
-fun download(url: String): ByteArray {
+fun download(url: String, requestId: String? = null): ByteArray {
     return withNetworkRetries("图片下载") {
-        val conn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
+        ensureImageRequestNotCancelled(requestId)
+        val parsedConn = try { URL(url).openConnection() as HttpURLConnection } catch (e: Exception) {
             throw IOException("图片下载URL解析失败", e)
         }
-        conn.connectTimeout = CONNECT_TIMEOUT_MS
-        conn.readTimeout = READ_TIMEOUT_MS
-        conn.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) ImageForge/2.5")
-        conn.setRequestProperty("Connection", "keep-alive")
+        // 纳入连接追踪，使用户取消任务时能一并中断结果图下载（大图可达数 MB）
+        val conn = trackConnection(requestId, parsedConn.apply {
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) ImageForge/2.5")
+            setRequestProperty("Connection", "keep-alive")
+        })
 
         try {
             val code = readResponseCode(conn, "图片下载")
@@ -962,7 +982,7 @@ fun download(url: String): ByteArray {
             }
             bytes
         } finally {
-            conn.disconnect()
+            closeConnection(requestId, conn)
         }
     }
 }

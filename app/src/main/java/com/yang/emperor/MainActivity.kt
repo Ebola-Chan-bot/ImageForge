@@ -1533,9 +1533,15 @@ fun MainScreen(
                             // 参考图缩略图条：按选中顺序展示，徽章序号即向 API 发送的数组下标（从 0 开始），
                             // 与接口实际发送顺序严格一致，部分模型支持按序号引用特定参考图。
                             if (selectedImageBytesList.isNotEmpty() && !isReadingReferenceImage) {
-                                val referenceThumbnails = remember(selectedImageBytesList) {
-                                    selectedImageBytesList.map { bytes ->
-                                        runCatching { decodePreviewBitmap(bytes, maxSide = 240) }.getOrNull()
+                                // 多图解码较重，放到后台线程异步生成，避免阻塞重组主线程
+                                var referenceThumbnails by remember(selectedImageBytesList) {
+                                    mutableStateOf(emptyList<Bitmap?>())
+                                }
+                                LaunchedEffect(selectedImageBytesList) {
+                                    referenceThumbnails = withContext(Dispatchers.Default) {
+                                        selectedImageBytesList.map { bytes ->
+                                            runCatching { decodePreviewBitmap(bytes, maxSide = 240) }.getOrNull()
+                                        }
                                     }
                                 }
                                 Column(

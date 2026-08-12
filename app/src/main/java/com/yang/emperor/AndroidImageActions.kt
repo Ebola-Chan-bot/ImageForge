@@ -210,7 +210,8 @@ fun cacheMultipleReferenceImageBytes(context: Context, uris: List<Uri>): List<By
             runCatching { cacheFile.delete() }
             throw IOException("参考图缓存写入失败，请重新选择图片", e)
         }
-        cacheFile.inputStream().use { it.readBytes() }
+        // bytes 已完整读入内存，直接返回；无需再从缓存文件回读一遍（双倍 I/O 不带来任何正确性收益）
+        bytes
     }
 }
 
