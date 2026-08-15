@@ -1459,7 +1459,14 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(20.dp))
-                                    .clickable(enabled = !isReadingReferenceImage) { picker.launch("image/*") },
+                                    .clickable(enabled = !isReadingReferenceImage) {
+                                        // 已选参考图时打开参考图弹窗（可清除或更换）；否则直接打开图片选择器
+                                        if (selectedImageBytesList.isNotEmpty()) {
+                                            showReferenceSheet = true
+                                        } else {
+                                            picker.launch("image/*")
+                                        }
+                                    },
                                 color = MaterialTheme.colorScheme.surfaceContainerLowest,
                                 shape = RoundedCornerShape(20.dp),
                                 tonalElevation = 1.dp
