@@ -1,6 +1,10 @@
 package com.yang.emperor
 
+import android.content.SharedPreferences
 import androidx.compose.ui.graphics.Color
+import androidx.core.content.edit
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * 应用内统一配置常量。
@@ -33,6 +37,10 @@ object ConfigKeys {
 
     // “自动寻找生图模型”的结果持久化
     const val DISCOVERED_IMAGE_MODELS = "discoveredImageModels"
+
+    // 多组连接配置（Base URL / API Key / 接口模式）
+    const val CONNECTION_CONFIGS = "connectionConfigs"
+    const val ACTIVE_CONNECTION_NAME = "activeConnectionName"
 
     // 历史记录
     const val HISTORY = "history"
@@ -79,6 +87,47 @@ data class HistoryItem(
     val error: String = ""
 )
 
+/** 一组持久保存的连接配置：名称 + Base URL + API Key。
+ * 接口模式属于创作时的独立设置，不属于配置组。 */
+data class ConnectionConfig(
+    val name: String,
+    val baseUrl: String,
+    val apiKey: String
+)
+
+/** 读取持久保存的多组连接配置；损坏或为空时返回空列表。 */
+fun loadConnectionConfigs(prefs: SharedPreferences): List<ConnectionConfig> {
+    val raw = prefs.getString(ConfigKeys.CONNECTION_CONFIGS, "") ?: ""
+    if (raw.isBlank()) return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val name = item.optString("name", "").trim()
+            if (name.isEmpty()) return@mapNotNull null
+            ConnectionConfig(
+                name = name,
+                baseUrl = item.optString("baseUrl", ""),
+                apiKey = item.optString("apiKey", "")
+            )
+        }.distinctBy { it.name }
+    }.getOrDefault(emptyList())
+}
+
+/** 持久保存多组连接配置（JSON 数组，覆盖式写入）。 */
+fun saveConnectionConfigs(prefs: SharedPreferences, configs: List<ConnectionConfig>) {
+    val array = JSONArray()
+    configs.forEach { config ->
+        array.put(
+            JSONObject()
+                .put("name", config.name)
+                .put("baseUrl", config.baseUrl)
+                .put("apiKey", config.apiKey)
+        )
+    }
+    prefs.edit { putString(ConfigKeys.CONNECTION_CONFIGS, array.toString()) }
+}
+
 data class ImageTask(
     val id: String,
     val time: String,
@@ -109,6 +158,7 @@ val imageModels = listOf(
 )
 
 val generationSizes = listOf(
+    SizeOption("auto", "自动尺寸", "由服务端决定分辨率，不发送 size 参数"),
     SizeOption("1024x1024", "1:1 方图", "标准正方形，通用首选"),
     SizeOption("1536x1024", "3:2 横图", "适合封面、壁纸横构图"),
     SizeOption("1024x1536", "2:3 竖图", "适合头像、海报竖构图"),
@@ -123,6 +173,7 @@ val generationSizes = listOf(
 )
 
 val editSizes = listOf(
+    SizeOption("auto", "自动尺寸", "由服务端决定分辨率，不发送 size 参数"),
     SizeOption("1024x1024", "1:1 方图", "编辑稳定、兼容性最好"),
     SizeOption("1536x1024", "3:2 横图", "横向延展"),
     SizeOption("1024x1536", "2:3 竖图", "纵向延展"),

@@ -65,9 +65,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -199,6 +201,11 @@ internal fun SettingsScreen(
     customEditModel: String,
     currentEditModel: String,
     recommendedModels: List<String>,
+    configs: List<ConnectionConfig>,
+    activeConfigName: String,
+    onSelectConfig: (ConnectionConfig) -> Unit,
+    onSaveCurrentAsConfig: () -> Unit,
+    onDeleteConfig: (ConnectionConfig) -> Unit,
     onBaseUrlChange: (String) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onApiModeChange: (ApiMode) -> Unit,
@@ -240,6 +247,82 @@ internal fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     SectionTitle("连接配置", "这里只保留接口地址和密钥；模型与生成参数在首页二级栏调整")
+
+                    SectionTitle("连接配置组", "可保存多组 Base URL / API Key 配置，点击一组即激活用于作图")
+                    if (configs.isEmpty()) {
+                        Text(
+                            "暂无已保存的配置。在下方填写 Base URL 与 API Key 后，点击“保存为配置组”即可长期保留并随时切换。",
+                            color = Color(0xFF6B7280),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    configs.forEach { config ->
+                        val isActive = config.name == activeConfigName
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { onSelectConfig(config) },
+                            color = if (isActive) softAccent else MaterialTheme.colorScheme.surfaceContainerLowest,
+                            shape = RoundedCornerShape(18.dp),
+                            tonalElevation = 1.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = config.name,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = if (config.baseUrl.isNotBlank()) config.baseUrl else "未填写 Base URL",
+                                        color = Color(0xFF6B7280),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (isActive) {
+                                    Text(
+                                        text = "已激活",
+                                        color = accent,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 6.dp)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { onDeleteConfig(config) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "删除配置 ${config.name}",
+                                        tint = errorText,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onSaveCurrentAsConfig,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("将当前 Base URL / API Key 保存为配置组")
+                    }
+
+                    HorizontalDivider(color = DividerDefaults.color.copy(alpha = 0.55f))
 
                     OutlinedTextField(
                         value = baseUrl,

@@ -312,6 +312,12 @@ fun MainScreen(
 
     var currentRoute by rememberSaveable { mutableStateOf(ScreenRoute.MAIN) }
 
+    // 多组连接配置：持久保存的 Base URL / API Key 集合（接口模式不属于配置组，
+    // 它是创作时的独立设置），仅在用户显式点击切换时生效；
+    // 当前连接字段以独立存储的键为唯一权威来源（启动时直接读取）。
+    var connectionConfigs by remember { mutableStateOf(loadConnectionConfigs(prefs)) }
+    var activeConfigName by remember { mutableStateOf(prefs.getString(ConfigKeys.ACTIVE_CONNECTION_NAME, "") ?: "") }
+
     var baseUrl by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.BASE_URL, "") ?: "") }
     var apiKey by rememberSaveable { mutableStateOf(prefs.getString(ConfigKeys.API_KEY, "") ?: "") }
     var apiMode by rememberSaveable { mutableStateOf(ApiMode.from(prefs.getString(ConfigKeys.API_MODE, ApiMode.IMAGES.value))) }
@@ -334,6 +340,8 @@ fun MainScreen(
     var showDiscoveredModelPicker by remember { mutableStateOf(false) }
     var isDiscoveringImageModels by remember { mutableStateOf(false) }
     var showParamsSheet by remember { mutableStateOf(false) }
+    var showCustomSizeInput by rememberSaveable { mutableStateOf(false) }
+    var customSizeInput by rememberSaveable { mutableStateOf("") }
 
     var status by remember { mutableStateOf("") }
     var historyNotice by remember { mutableStateOf("") }
@@ -371,6 +379,44 @@ fun MainScreen(
             putString(ConfigKeys.GENERATE_MODEL, selectedModel)
             putString(ConfigKeys.EDIT_MODEL, selectedModel)
             putString(ConfigKeys.MODEL, selectedModel)
+        }
+    }
+
+    /** 激活某组已保存的连接配置：写入当前 Base URL / API Key 并记为激活项（不影响接口模式）。 */
+    fun applyConnectionConfig(config: ConnectionConfig) {
+        baseUrl = config.baseUrl
+        apiKey = config.apiKey
+        activeConfigName = config.name
+        prefs.edit {
+            putString(ConfigKeys.ACTIVE_CONNECTION_NAME, config.name)
+            putString(ConfigKeys.BASE_URL, config.baseUrl.trim())
+            putString(ConfigKeys.API_KEY, config.apiKey.trim())
+        }
+    }
+
+    /** 将当前 Base URL / API Key 保存为一个配置组；名称"配置 N"自动递增且不与已有名称冲突。 */
+    fun saveCurrentAsConnectionConfig() {
+        val existingNames = connectionConfigs.map { it.name }.toSet()
+        var serial = connectionConfigs.size + 1
+        while ("配置 $serial" in existingNames) serial++
+        val newName = "配置 $serial"
+        val newConfig = ConnectionConfig(
+            name = newName,
+            baseUrl = baseUrl.trim(),
+            apiKey = apiKey.trim()
+        )
+        connectionConfigs = connectionConfigs + newConfig
+        saveConnectionConfigs(prefs, connectionConfigs)
+        applyConnectionConfig(newConfig)
+    }
+
+    /** 删除一组连接配置；若删除的是当前激活项，则清除激活标记。 */
+    fun deleteConnectionConfig(config: ConnectionConfig) {
+        connectionConfigs = connectionConfigs.filter { it.name != config.name }
+        saveConnectionConfigs(prefs, connectionConfigs)
+        if (activeConfigName == config.name) {
+            activeConfigName = ""
+            prefs.edit { remove(ConfigKeys.ACTIVE_CONNECTION_NAME) }
         }
     }
 
@@ -428,6 +474,10 @@ fun MainScreen(
         else -> if (editMode) editSizes else generationSizes
     }
     val selectedSizeOption = currentSizes.firstOrNull { it.value == size } ?: currentSizes.first()
+    // 尺寸不在预设列表中时（用户自定义输入）显示自定义标签
+    val sizeDisplay = selectedSizeOption.takeIf { it.value == size }
+        ?.let { "${it.title} · ${it.value}" }
+        ?: "自定义尺寸 · $size"
     val modelOptions = remember(discoveredImageModels) {
         (discoveredImageModels + imageModels).distinct()
     }
@@ -443,8 +493,10 @@ fun MainScreen(
         editMode = selectedImageBytesList.isNotEmpty()
     }
 
-    LaunchedEffect(editMode, apiMode) {
-        if (currentSizes.none { it.value == size }) {
+    // 仅在切换到 Atlas Cloud 模式时校正尺寸：旧的像素尺寸不在比例列表时落到首项；
+    // 其他模式下的自定义 WxH 尺寸原样保留，是否有效由服务端判定。
+    LaunchedEffect(apiMode) {
+        if (apiMode == ApiMode.ATLAS_CLOUD && currentSizes.none { it.value == size }) {
             size = currentSizes.first().value
         }
     }
@@ -1241,17 +1293,46 @@ fun MainScreen(
         ) {
             AppDropdownField(
                 title = "尺寸 / 比例",
-                selected = selectedSizeOption.title + " · " + selectedSizeOption.value,
-                options = currentSizes.map { "${it.title} · ${it.value}" },
+                selected = sizeDisplay,
+                options = currentSizes.map { "${it.title} · ${it.value}" } + "自定义尺寸…",
                 onSelected = { display ->
-                    currentSizes.firstOrNull {
-                        "${it.title} · ${it.value}" == display
-                    }?.let {
-                        size = it.value
-                        prefs.edit { putString(ConfigKeys.SIZE, it.value) }
+                    if (display == "自定义尺寸…") {
+                        // 打开自定义输入：若当前已是自定义值则回填到输入框
+                        customSizeInput = if (currentSizes.none { it.value == size }) size else ""
+                        showCustomSizeInput = true
+                    } else {
+                        currentSizes.firstOrNull {
+                            "${it.title} · ${it.value}" == display
+                        }?.let {
+                            size = it.value
+                            prefs.edit { putString(ConfigKeys.SIZE, it.value) }
+                            showCustomSizeInput = false
+                        }
                     }
                 }
             )
+            if (showCustomSizeInput) {
+                OutlinedTextField(
+                    value = customSizeInput,
+                    onValueChange = { customSizeInput = it },
+                    label = { Text("自定义尺寸") },
+                    placeholder = { Text("输入任意 WxH，例如 1536x1536；留空则使用 auto") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp)
+                )
+                Button(
+                    onClick = {
+                        // 不做本地校验，自定义值原样提交；留空回退 auto（服务端决定分辨率）
+                        size = customSizeInput.trim().ifBlank { "auto" }
+                        prefs.edit { putString(ConfigKeys.SIZE, size) }
+                        showCustomSizeInput = false
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("应用自定义尺寸")
+                }
+            }
             AppDropdownField(
                 title = "画质",
                 selected = quality,
@@ -1307,6 +1388,20 @@ fun MainScreen(
             customEditModel = customEditModel,
             currentEditModel = editModel,
             recommendedModels = imageModels,
+            configs = connectionConfigs,
+            activeConfigName = activeConfigName,
+            onSelectConfig = { config ->
+                applyConnectionConfig(config)
+                settingsNotice = "已切换到连接配置「${config.name}」。"
+            },
+            onSaveCurrentAsConfig = {
+                saveCurrentAsConnectionConfig()
+                settingsNotice = "已将当前连接保存为「${activeConfigName}」。"
+            },
+            onDeleteConfig = { config ->
+                deleteConnectionConfig(config)
+                settingsNotice = "已删除连接配置「${config.name}」。"
+            },
             onBaseUrlChange = { baseUrl = it },
             onApiKeyChange = { apiKey = it },
             onApiModeChange = { apiMode = it },
@@ -1348,6 +1443,8 @@ fun MainScreen(
                     remove(ConfigKeys.OUTPUT_FORMAT)
                     remove(ConfigKeys.BACKGROUND)
                     remove(ConfigKeys.ONBOARDING_DONE)
+                    remove(ConfigKeys.CONNECTION_CONFIGS)
+                    remove(ConfigKeys.ACTIVE_CONNECTION_NAME)
                 }
                 baseUrl = ""
                 apiKey = ""
@@ -1357,6 +1454,8 @@ fun MainScreen(
                 customGenerateModel = generateModel
                 customEditModel = editModel
                 customSaveDirectoryUriString = ""
+                connectionConfigs = emptyList()
+                activeConfigName = ""
                 settingsNotice = "已清除连接配置信息。"
                 currentRoute = ScreenRoute.SETTINGS
             },
@@ -1756,7 +1855,7 @@ fun MainScreen(
 
                             ConfigEntryCard(
                                 title = "生成参数",
-                                primary = selectedSizeOption.title + " · " + selectedSizeOption.value,
+                                primary = sizeDisplay,
                                 secondary = "画质 $quality · $outputFormat",
                                 onClick = { showParamsSheet = true }
                             )

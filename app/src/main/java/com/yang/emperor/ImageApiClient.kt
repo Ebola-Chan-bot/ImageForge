@@ -60,6 +60,10 @@ private fun ensureImageRequestNotCancelled(requestId: String?) {
     }
 }
 
+/** 是否为自动尺寸：auto 或空白表示不指定分辨率，由服务端决定，请求时不携带 size 参数。 */
+private fun isAutoSize(size: String): Boolean =
+    size.isBlank() || size.trim().equals("auto", ignoreCase = true)
+
 private fun trackConnection(requestId: String?, conn: HttpURLConnection): HttpURLConnection {
     if (!requestId.isNullOrBlank()) {
         val connections = activeImageConnections.getOrPut(requestId) {
@@ -108,12 +112,16 @@ fun callGenerateImages(
     require(model.isNotBlank()) { "请填写模型 ID" }
     require(prompt.isNotBlank()) { "请填写 Prompt" }
 
-    fun imageBody(modelId: String, requestQuality: String): JSONObject = JSONObject()
-        .put("model", modelId.trim())
-        .put("prompt", prompt)
-        .put("n", 1)
-        .put("size", size)
-        .put("quality", requestQuality)
+    fun imageBody(modelId: String, requestQuality: String): JSONObject {
+        val body = JSONObject()
+            .put("model", modelId.trim())
+            .put("prompt", prompt)
+            .put("n", 1)
+            .put("quality", requestQuality)
+        // auto 时不携带 size 参数，由服务端决定分辨率
+        if (!isAutoSize(size)) body.put("size", size.trim())
+        return body
+    }
 
     val imageModel = model.trim()
     val imageQuality = normalizeImageQualityForModel(imageModel, quality)
@@ -173,9 +181,9 @@ fun callGenerateResponses(
 
     val tool = JSONObject()
         .put("type", "image_generation")
-        .put("size", size)
         .put("quality", quality)
         .put("output_format", outputFormat)
+    if (!isAutoSize(size)) tool.put("size", size.trim())
 
     val body = JSONObject()
         .put("model", model.trim())
@@ -282,7 +290,8 @@ fun callEdit(
 
                 field("model", model.trim())
                 field("prompt", prompt)
-                field("size", size)
+                // auto 时不携带 size 字段，由服务端决定分辨率
+                if (!isAutoSize(size)) field("size", size.trim())
                 field("quality", quality)
                 field("output_format", outputFormat)
                 if (background.isNotBlank()) field("background", background)
@@ -331,10 +340,10 @@ fun callEditGenerationsCompat(
         .put("model", model.trim())
         .put("prompt", compatPrompt)
         .put("n", 1)
-        .put("size", size)
         .put("quality", quality)
         .put("image", imageDataUrls.first())
         .put("reference_image", imageDataUrls.first())
+    if (!isAutoSize(size)) body.put("size", size.trim())
     if (referenceCount > 1) {
         body.put("images", JSONArray(imageDataUrls))
     }
@@ -587,9 +596,9 @@ fun callEditResponses(
     val tool = JSONObject()
         .put("type", "image_generation")
         .put("action", "edit")
-        .put("size", size)
         .put("quality", quality)
         .put("output_format", outputFormat)
+    if (!isAutoSize(size)) tool.put("size", size.trim())
 
     if (background.isNotBlank()) {
         tool.put("background", background)
@@ -687,9 +696,14 @@ private fun parseImageResponsesFromText(text: String): List<ByteArray> {
 
 private fun buildChatImagePrompt(prompt: String, size: String, quality: String): String {
     return buildString {
-        append("Generate 1 image. Size: ")
-        append(size)
-        append(". Quality: ")
+        append("Generate 1 image.")
+        // auto 时不向提示词描述尺寸
+        if (!isAutoSize(size)) {
+            append(" Size: ")
+            append(size)
+            append(".")
+        }
+        append(" Quality: ")
         append(quality)
         append(". Prompt: ")
         append(prompt)
